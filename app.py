@@ -3,7 +3,8 @@ import io
 import os
 import secrets
 import hmac
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -17,8 +18,26 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "change-this-development-secret-before-deployment")
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+_secret_key = os.getenv("SECRET_KEY")
+_is_production = (
+    os.getenv("RENDER", "").lower() == "true"
+    or bool(os.getenv("RENDER_SERVICE_ID"))
+    or os.getenv("FLASK_ENV") == "production"
+)
+if not _secret_key and _is_production:
+    raise RuntimeError("SECRET_KEY must be set in the production environment.")
+app.secret_key = _secret_key or secrets.token_hex(32)
+_database_url = os.getenv("DATABASE_URL")
+if not _database_url and _is_production:
+    raise RuntimeError("DATABASE_URL must be set in the production environment.")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=_is_production or os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+    SESSION_REFRESH_EACH_REQUEST=True,
+    MAX_CONTENT_LENGTH=1024 * 1024,
+)
 
 
 @app.before_request
@@ -31,6 +50,96 @@ def protect_post_requests():
             abort(400, description="Invalid or missing security token. Refresh the page and try again.")
 
 
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+def safe_next_url(target):
+    """Accept only a local absolute path; reject external and scheme-relative redirects."""
+    if not target or "\\" in target:
+        return None
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        return None
+    return target
+
+
+def safe_csv_cell(value):
+    """Prevent spreadsheet formula execution from untrusted text fields in CSV exports."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
+
+
+def _auth_identifier_hash(identifier):
+    normalized = (identifier or "").strip().casefold()
+    return hmac.new(app.secret_key.encode("utf-8"), normalized.encode("utf-8"), "sha256").hexdigest()
+
+
+def login_is_throttled(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM auth_login_attempts
+               WHERE identifier_hash = %s
+                 AND (locked_until > CURRENT_TIMESTAMP OR
+                      (attempt_count >= 8 AND first_attempt_at > CURRENT_TIMESTAMP - INTERVAL '15 minutes'))
+               LIMIT 1""",
+            (key,),
+        ).fetchone()
+    return row is not None
+
+
+def record_login_failure(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO auth_login_attempts (identifier_hash, attempt_count, first_attempt_at, locked_until)
+               VALUES (%s, 1, CURRENT_TIMESTAMP, NULL)
+               ON CONFLICT (identifier_hash) DO UPDATE SET
+                 attempt_count = CASE
+                   WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN 1
+                   ELSE auth_login_attempts.attempt_count + 1 END,
+                 first_attempt_at = CASE
+                   WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN CURRENT_TIMESTAMP
+                   ELSE auth_login_attempts.first_attempt_at END,
+                 locked_until = CASE
+                   WHEN (CASE
+                     WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN 1
+                     ELSE auth_login_attempts.attempt_count + 1 END) >= 8
+                   THEN CURRENT_TIMESTAMP + INTERVAL '15 minutes'
+                   ELSE NULL END""",
+            (key,),
+        )
+        # Periodically discard old pseudonymous throttling records.
+        conn.execute("DELETE FROM auth_login_attempts WHERE first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '1 day'")
+
+
+def clear_login_failures(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        conn.execute("DELETE FROM auth_login_attempts WHERE identifier_hash = %s", (key,))
+
+
+def password_validation_error(password):
+    if len(password) < 12:
+        return "Password must be at least 12 characters long."
+    if len(password) > 128:
+        return "Password must be no longer than 128 characters."
+    if not password.strip():
+        return "Password cannot contain only spaces."
+    return None
+
+
 @app.context_processor
 def inject_csrf_token():
     return {"csrf_token": session.get("csrf_token", "")}
@@ -40,7 +149,7 @@ SUBJECTS = ["Programming", "Database", "Mathematics", "Networking", "Web Develop
 
 
 def db_connection():
-    dsn = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/student_grades")
+    dsn = _database_url or "postgresql://postgres:postgres@localhost:5432/student_grades"
     return psycopg.connect(dsn, row_factory=dict_row)
 
 
@@ -155,9 +264,9 @@ def create_admin_command():
     """Interactively create an administrator account."""
     import getpass
     username = input("Admin username: ").strip()
-    password = getpass.getpass("Admin password (minimum 10 characters): ")
-    if not username or len(password) < 10:
-        raise SystemExit("Username is required and password must be at least 10 characters.")
+    password = getpass.getpass("Admin password (minimum 12 characters): ")
+    if not username or password_validation_error(password):
+        raise SystemExit("Username is required and password must be 12-128 characters and not blank.")
     init_db()
     with db_connection() as conn:
         exists = conn.execute("SELECT id FROM admins WHERE username = %s", (username,)).fetchone()
@@ -173,13 +282,20 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        if login_is_throttled(username):
+            flash("Unable to sign in right now. Please wait 15 minutes and try again.", "error")
+            return render_template("login.html"), 429
         with db_connection() as conn:
             admin = conn.execute("SELECT * FROM admins WHERE username = %s", (username,)).fetchone()
         if admin and check_password_hash(admin["password_hash"], password):
+            clear_login_failures(username)
             session.clear()
+            session.permanent = True
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            destination = safe_next_url(request.args.get("next"))
+            return redirect(destination or url_for("dashboard"))
+        record_login_failure(username)
         flash("Invalid username or password. If you don’t have an account, please contact the IT Department to request administrator access.", "error")
     return render_template("login.html")
 
@@ -221,14 +337,16 @@ def dashboard():
 def validate_student_form(form):
     data = {}
     errors = []
-    for field, label in [("student_number", "Student number"), ("first_name", "First name"), ("last_name", "Last name")]:
+    for field, label, maximum in [("student_number", "Student number", 40), ("first_name", "First name", 100), ("last_name", "Last name", 100)]:
         value = form.get(field, "").strip()
         if not value:
             errors.append(f"{label} is required.")
+        elif len(value) > maximum:
+            errors.append(f"{label} must be {maximum} characters or fewer.")
         data[field] = value
-    data["email"] = form.get("email", "").strip() or None
-    if data["email"] and ("@" not in data["email"] or "." not in data["email"].split("@")[-1]):
-        errors.append("Enter a valid email address or leave it blank.")
+    data["email"] = form.get("email", "").strip().lower() or None
+    if data["email"] and (len(data["email"]) > 255 or "@" not in data["email"] or "." not in data["email"].split("@")[-1]):
+        errors.append("Enter a valid email address (maximum 255 characters) or leave it blank.")
     try:
         data["attendance"] = float(form.get("attendance", ""))
         if not 0 <= data["attendance"] <= 100:
@@ -334,9 +452,10 @@ def export_csv():
     writer.writerow(["Student Number", "First Name", "Last Name", "Email", "Attendance", *SUBJECTS,
                      "Average", "Letter Grade", "Academic Status", "Performance", "Scholarship", "Warning"])
     for s in students:
-        writer.writerow([s["student_number"], s["first_name"], s["last_name"], s["email"] or "", s["attendance"],
-                         *[s[sub.lower().replace(" ", "_")] for sub in SUBJECTS], s["average"], s["letter_grade"],
-                         s["status"], s["performance"], s["scholarship"], s["warning"]])
+        row = [s["student_number"], s["first_name"], s["last_name"], s["email"] or "", s["attendance"],
+               *[s[sub.lower().replace(" ", "_")] for sub in SUBJECTS], s["average"], s["letter_grade"],
+               s["status"], s["performance"], s["scholarship"], s["warning"]]
+        writer.writerow([safe_csv_cell(value) for value in row])
     return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
                     headers={"Content-Disposition": "attachment; filename=student_grade_report.csv"})
 
@@ -377,8 +496,200 @@ def not_found(_error):
 
 @app.errorhandler(500)
 def server_error(_error):
-    return render_template("error.html", code=500, message="An unexpected error occurred. Check the terminal for details."), 500
+    return render_template("error.html", code=500, message="An unexpected error occurred. Please try again or contact the system administrator."), 500
 
+
+
+def student_login_required(view):
+    from functools import wraps
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        account_id = session.get("student_account_id")
+        student_id = session.get("student_id")
+        if not account_id or not student_id:
+            return redirect(url_for("student_login", next=request.path))
+        # Re-check status so an administrator can revoke access immediately.
+        with db_connection() as conn:
+            account = conn.execute(
+                "SELECT id FROM student_accounts WHERE id = %s AND student_id = %s AND is_active = TRUE",
+                (account_id, student_id),
+            ).fetchone()
+        if not account:
+            session.clear()
+            flash("Your session is no longer active. Please sign in again.", "error")
+            return redirect(url_for("student_login"))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+PRIVACY_NOTICE_VERSION = "1.0"
+
+
+@app.get("/privacy")
+def privacy_notice():
+    return render_template("privacy.html", privacy_notice_version=PRIVACY_NOTICE_VERSION)
+
+
+@app.route("/student/login", methods=["GET", "POST"])
+def student_login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        if login_is_throttled(email):
+            flash("Unable to sign in right now. Please wait 15 minutes and try again.", "error")
+            return render_template("student_login.html"), 429
+        with db_connection() as conn:
+            account = conn.execute(
+                "SELECT sa.id, sa.password_hash, sa.is_active, s.id AS student_id, s.first_name, s.last_name "
+                "FROM student_accounts sa JOIN students s ON s.id = sa.student_id WHERE LOWER(sa.email) = %s",
+                (email,)
+            ).fetchone()
+        if account and check_password_hash(account["password_hash"], password) and account["is_active"]:
+            clear_login_failures(email)
+            session.clear()
+            session.permanent = True
+            session["student_account_id"] = account["id"]
+            session["student_id"] = account["student_id"]
+            session["student_name"] = account["first_name"] + " " + account["last_name"]
+            destination = safe_next_url(request.args.get("next"))
+            return redirect(destination or url_for("student_portal"))
+        record_login_failure(email)
+        flash("Unable to sign in. Check your credentials or contact the school administrator if your account is awaiting approval.", "error")
+    return render_template("student_login.html")
+
+
+@app.route("/student/register", methods=["GET", "POST"])
+def student_register():
+    if request.method == "POST":
+        student_number = request.form.get("student_number", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not student_number or not email:
+            flash("Please complete every field.", "error")
+        elif password_validation_error(password):
+            flash(password_validation_error(password), "error")
+        elif password != confirm_password:
+            flash("Passwords do not match.", "error")
+        elif request.form.get("privacy_ack") != "on":
+            flash("Please read and acknowledge the privacy notice before registering.", "error")
+        else:
+            try:
+                with db_connection() as conn:
+                    student = conn.execute(
+                        "SELECT id FROM students WHERE student_number = %s AND LOWER(email) = %s",
+                        (student_number, email)
+                    ).fetchone()
+                    if not student:
+                        flash("We could not submit a registration request with those details. Check them or contact the school administrator.", "error")
+                    else:
+                        existing = conn.execute(
+                            "SELECT id FROM student_accounts WHERE student_id = %s OR LOWER(email) = %s",
+                            (student["id"], email)
+                        ).fetchone()
+                        if existing:
+                            flash("We could not submit a registration request with those details. Check them or contact the school administrator.", "error")
+                        else:
+                            conn.execute(
+                                "INSERT INTO student_accounts (student_id, email, password_hash, is_active, privacy_notice_version, privacy_notice_acknowledged_at) "
+                                "VALUES (%s, %s, %s, FALSE, %s, CURRENT_TIMESTAMP)",
+                                (student["id"], email, generate_password_hash(password), PRIVACY_NOTICE_VERSION)
+                            )
+                            flash("Your registration request has been submitted. A school administrator must approve access before you can view student records.", "success")
+                            return redirect(url_for("student_login"))
+            except psycopg.errors.UniqueViolation:
+                flash("An account already exists for this student or email. Please sign in.", "error")
+    return render_template("student_register.html")
+
+
+@app.route("/admin/accounts/create", methods=["GET", "POST"])
+@login_required
+def create_admin_account():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not username:
+            flash("Username is required.", "error")
+        elif len(username) > 80:
+            flash("Username must be 80 characters or fewer.", "error")
+        elif password_validation_error(password):
+            flash(password_validation_error(password), "error")
+        elif password != confirm_password:
+            flash("Passwords do not match.", "error")
+        else:
+            try:
+                with db_connection() as conn:
+                    conn.execute("INSERT INTO admins (username, password_hash) VALUES (%s, %s)",
+                                 (username, generate_password_hash(password)))
+                flash("Administrator account created successfully.", "success")
+                return redirect(url_for("dashboard"))
+            except psycopg.errors.UniqueViolation:
+                flash("That administrator username already exists.", "error")
+    return render_template("admin_register.html")
+
+
+@app.route("/admin/student-accounts")
+@login_required
+def manage_student_accounts():
+    with db_connection() as conn:
+        pending_accounts = conn.execute(
+            """SELECT sa.id, sa.email, sa.created_at, s.student_number, s.first_name, s.last_name
+               FROM student_accounts sa JOIN students s ON s.id = sa.student_id
+               WHERE sa.is_active = FALSE ORDER BY sa.created_at"""
+        ).fetchall()
+        active_accounts = conn.execute(
+            """SELECT sa.id, sa.email, sa.created_at, s.student_number, s.first_name, s.last_name
+               FROM student_accounts sa JOIN students s ON s.id = sa.student_id
+               WHERE sa.is_active = TRUE ORDER BY s.last_name, s.first_name"""
+        ).fetchall()
+    return render_template("admin_student_accounts.html", pending_accounts=pending_accounts,
+                           active_accounts=active_accounts)
+
+
+@app.post("/admin/student-accounts/<int:account_id>/approve")
+@login_required
+def approve_student_account(account_id):
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE student_accounts SET is_active = TRUE WHERE id = %s AND is_active = FALSE",
+            (account_id,)
+        )
+    flash("Student account approved." if result.rowcount else "Pending account not found.",
+          "success" if result.rowcount else "error")
+    return redirect(url_for("manage_student_accounts"))
+
+
+@app.post("/admin/student-accounts/<int:account_id>/disable")
+@login_required
+def disable_student_account(account_id):
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE student_accounts SET is_active = FALSE WHERE id = %s AND is_active = TRUE",
+            (account_id,)
+        )
+    flash("Student account access disabled." if result.rowcount else "Active account not found.",
+          "success" if result.rowcount else "error")
+    return redirect(url_for("manage_student_accounts"))
+
+
+@app.route("/student/portal")
+@student_login_required
+def student_portal():
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM students WHERE id = %s", (session["student_id"],)).fetchone()
+    if not row:
+        session.clear()
+        flash("Your student record could not be found. Contact the school administrator.", "error")
+        return redirect(url_for("student_login"))
+    return render_template("student_portal.html", student=enrich_student(row), subjects=SUBJECTS)
+
+
+@app.post("/student/logout")
+@student_login_required
+def student_logout():
+    session.clear()
+    return redirect(url_for("student_login"))
 
 if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
+    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
