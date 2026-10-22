@@ -94,5 +94,26 @@ The overall average is the arithmetic mean of the five subject grades. No subjec
 - **Chart blank:** check internet access for the Chart.js CDN; grade calculations and exports are handled locally.
 - **500 error:** check the VS Code terminal for the underlying error. Do not use Flask debug mode on a public server.
 
-## Security notes
-This package is intended for local development. Before exposing it to a network, set a strong secret key, disable debug mode, configure HTTPS and secure cookies, add CSRF protection, and review deployment security. Keep `.env` private. The built-in development server is not intended for production deployment.
+## Security and deployment notes
+
+- Set a long, random `SECRET_KEY` in Render's environment variables. Production startup intentionally fails if it is missing. Never commit or share this value.
+- Keep `FLASK_DEBUG=false` in production. Use Gunicorn or the platform's production server, not Flask's development server.
+- Use HTTPS and keep `.env` private. Rotate any database password or API token that has been exposed.
+- Forms use CSRF tokens. Admin sessions use HTTP-only cookies and are revoked when an administrator password is changed.
+- Student create, edit, and delete operations are recorded in the `audit_logs` table. Audit records contain action metadata rather than student grade values.
+- Grade and attendance inputs are validated on the server and constrained in PostgreSQL.
+- Password recovery requires an already registered email or phone and a configured SMTP or Twilio sender. Verification codes expire after 10 minutes and allow up to five attempts.
+- Automated regression tests run through GitHub Actions. Passing tests do not replace a deployment review, database backup plan, or manual security testing.
+
+### Recovery administration
+
+Use these Flask CLI commands from a trusted terminal with `DATABASE_URL` pointing to the intended database:
+
+```powershell
+py -m flask --app app set-admin-recovery-contact
+py -m flask --app app reset-admin-password
+```
+
+These commands prompt for account details and passwords. Do not paste database credentials or recovery codes into chat or commit them to the repository.
+
+The database schema is applied by `flask --app app init-db` and the configured Render startup command. The `session_version` migration and audit table are additive and do not delete student records.
