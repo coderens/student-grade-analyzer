@@ -89,3 +89,67 @@ CREATE TABLE IF NOT EXISTS student_accounts (
     reviewed_by_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS student_accounts_status_idx ON student_accounts (status, created_at DESC);
+
+-- Subject-based grading and editable term records.
+CREATE TABLE IF NOT EXISTS subjects (
+    id BIGSERIAL PRIMARY KEY,
+    subject_code VARCHAR(30) NOT NULL UNIQUE,
+    subject_name VARCHAR(150) NOT NULL UNIQUE,
+    units NUMERIC(4,1) NOT NULL DEFAULT 3 CHECK (units > 0 AND units <= 30),
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO subjects (subject_code, subject_name, units) VALUES
+    ('PROG', 'Programming', 3),
+    ('DB', 'Database', 3),
+    ('MATH', 'Mathematics', 3),
+    ('NET', 'Networking', 3),
+    ('WEB', 'Web Development', 3)
+ON CONFLICT (subject_code) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS student_subjects (
+    id BIGSERIAL PRIMARY KEY,
+    student_id BIGINT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE RESTRICT,
+    academic_year VARCHAR(20) NOT NULL DEFAULT '2026-2027',
+    semester VARCHAR(20) NOT NULL DEFAULT '1st Semester',
+    enrolled_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (student_id, subject_id, academic_year, semester)
+);
+CREATE INDEX IF NOT EXISTS student_subjects_student_idx ON student_subjects (student_id, academic_year, semester);
+CREATE INDEX IF NOT EXISTS student_subjects_subject_idx ON student_subjects (subject_id, academic_year, semester);
+
+CREATE TABLE IF NOT EXISTS grade_records (
+    id BIGSERIAL PRIMARY KEY,
+    student_subject_id BIGINT NOT NULL REFERENCES student_subjects(id) ON DELETE CASCADE,
+    term VARCHAR(10) NOT NULL CHECK (term IN ('Midterms', 'Finals')),
+    percentage NUMERIC(5,2) NOT NULL CHECK (percentage >= 0 AND percentage <= 100),
+    recorded_by_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (student_subject_id, term)
+);
+CREATE INDEX IF NOT EXISTS grade_records_enrollment_idx ON grade_records (student_subject_id, term);
+
+CREATE TABLE IF NOT EXISTS grade_record_history (
+    id BIGSERIAL PRIMARY KEY,
+    student_subject_id BIGINT NOT NULL REFERENCES student_subjects(id) ON DELETE CASCADE,
+    term VARCHAR(10) NOT NULL CHECK (term IN ('Midterms', 'Finals')),
+    action VARCHAR(10) NOT NULL CHECK (action IN ('created', 'updated', 'deleted')),
+    previous_percentage NUMERIC(5,2),
+    new_percentage NUMERIC(5,2),
+    actor_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS grade_record_history_enrollment_idx ON grade_record_history (student_subject_id, changed_at DESC);
+
+CREATE TABLE IF NOT EXISTS grading_policies (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    dean_list_gwa_max NUMERIC(3,2) NOT NULL DEFAULT 1.75 CHECK (dean_list_gwa_max > 0 AND dean_list_gwa_max <= 5),
+    max_subject_gwa NUMERIC(3,2) NOT NULL DEFAULT 2.50 CHECK (max_subject_gwa > 0 AND max_subject_gwa <= 5),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO grading_policies (id, dean_list_gwa_max, max_subject_gwa)
+VALUES (1, 1.75, 2.50) ON CONFLICT (id) DO NOTHING;
