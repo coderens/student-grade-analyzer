@@ -156,12 +156,13 @@ def login_required(view):
         # Re-check the session version so password changes revoke existing sessions.
         with db_connection() as conn:
             current = conn.execute(
-                "SELECT session_version FROM admins WHERE id = %s", (admin_id,)
+                "SELECT session_version, tracker_id FROM admins WHERE id = %s", (admin_id,)
             ).fetchone()
         if not current or current["session_version"] != session.get("session_version"):
             session.clear()
             flash("Your session has expired. Please sign in again.", "error")
             return redirect(url_for("login"))
+        session["tracker_id"] = str(current["tracker_id"])
         return view(*args, **kwargs)
     return wrapped
 
@@ -434,6 +435,10 @@ def login():
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             session["session_version"] = admin["session_version"]
+            session["tracker_id"] = str(admin["tracker_id"])
+            with db_connection() as conn:
+                log_audit_event(conn, "login", "admin", admin["id"],
+                                {"tracker_id": str(admin["tracker_id"])}, actor_admin_id=admin["id"])
             next_url = request.args.get("next", "")
             return redirect(next_url if is_safe_redirect_target(next_url) else url_for("dashboard"))
         flash("Invalid username or password.", "error")
@@ -443,6 +448,9 @@ def login():
 @app.post("/logout")
 @login_required
 def logout():
+    with db_connection() as conn:
+        log_audit_event(conn, "logout", "admin", session.get("admin_id"),
+                        {"tracker_id": session.get("tracker_id")})
     session.clear()
     return redirect(url_for("login"))
 
@@ -472,6 +480,26 @@ def dashboard():
         subject_averages.append(round(sum(float(s[key]) for s in students) / total, 2) if total else 0)
     return render_template("dashboard.html", stats=stats, students=students[:8], subjects=SUBJECTS,
                            subject_averages=subject_averages)
+
+
+@app.get("/my-activity")
+@login_required
+def my_activity():
+    admin_id = session["admin_id"]
+    with db_connection() as conn:
+        admin = conn.execute(
+            "SELECT username, tracker_id, created_at FROM admins WHERE id = %s",
+            (admin_id,)
+        ).fetchone()
+        events = conn.execute(
+            """SELECT action, entity_type, entity_id, details, created_at
+               FROM audit_logs
+               WHERE actor_admin_id = %s
+               ORDER BY created_at DESC
+               LIMIT 100""",
+            (admin_id,)
+        ).fetchall()
+    return render_template("my_activity.html", admin=admin, events=events)
 
 
 def validate_student_form(form):
@@ -600,6 +628,8 @@ def student_detail(student_id):
 @app.get("/export/students.csv")
 @login_required
 def export_csv():
+    with db_connection() as conn:
+        log_audit_event(conn, "export_csv", "report", details={"format": "csv"})
     students = fetch_students()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -616,6 +646,8 @@ def export_csv():
 @app.get("/export/students.pdf")
 @login_required
 def export_pdf():
+    with db_connection() as conn:
+        log_audit_event(conn, "export_pdf", "report", details={"format": "pdf"})
     students = fetch_students()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
