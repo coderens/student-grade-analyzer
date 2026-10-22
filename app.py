@@ -581,14 +581,14 @@ def student_register():
                         (student_number, email)
                     ).fetchone()
                     if not student:
-                        flash("Student number and email must match an existing school record. Contact your administrator if your details need updating.", "error")
+                        flash("We could not submit a registration request with those details. Check them or contact the school administrator.", "error")
                     else:
                         existing = conn.execute(
                             "SELECT id FROM student_accounts WHERE student_id = %s OR LOWER(email) = %s",
                             (student["id"], email)
                         ).fetchone()
                         if existing:
-                            flash("An account already exists for this student or email. Please sign in.", "error")
+                            flash("We could not submit a registration request with those details. Check them or contact the school administrator.", "error")
                         else:
                             conn.execute(
                                 "INSERT INTO student_accounts (student_id, email, password_hash, is_active, privacy_notice_version, privacy_notice_acknowledged_at) "
