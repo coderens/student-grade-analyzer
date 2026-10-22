@@ -776,6 +776,28 @@ def my_activity():
     return render_template("my_activity.html", admin=admin, events=events)
 
 
+
+def validate_student_profile_form(form):
+    data, errors = {}, []
+    for field, label, maximum in (("student_number", "Student number", 40),
+                                  ("first_name", "First name", 100), ("last_name", "Last name", 100)):
+        value = form.get(field, "").strip()
+        if not value: errors.append(f"{label} is required.")
+        elif len(value) > maximum: errors.append(f"{label} is too long.")
+        data[field] = value
+    data["email"] = form.get("email", "").strip() or None
+    if data["email"] and (len(data["email"]) > 255 or "@" not in data["email"] or "." not in data["email"].rsplit("@", 1)[-1]):
+        errors.append("Enter a valid email address or leave it blank.")
+    try:
+        data["attendance"] = float(form.get("attendance", "100"))
+        if not math.isfinite(data["attendance"]) or not 0 <= data["attendance"] <= 100:
+            errors.append("Attendance must be a finite number between 0 and 100.")
+    except (ValueError, TypeError):
+        data["attendance"] = 100
+        errors.append("Attendance must be a number.")
+    return data, errors
+
+
 def validate_student_form(form):
     data = {}
     errors = []
@@ -1098,27 +1120,24 @@ def students_page():
 @login_required
 def add_student():
     if request.method == "POST":
-        data, errors = validate_student_form(request.form)
+        data, errors = validate_student_profile_form(request.form)
         if errors:
             for error in errors: flash(error, "error")
-            return render_template("student_form.html", student=data, subjects=SUBJECTS, page_title="Add student")
+            return render_template("student_form.html", student=data, subjects=[], page_title="Add student")
         try:
             with db_connection() as conn:
-                inserted = conn.execute("""INSERT INTO students (student_number, first_name, last_name, email, attendance,
-                    programming, database, mathematics, networking, web_development)
-                    VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s,
-                    %(programming)s, %(database)s, %(mathematics)s, %(networking)s, %(web_development)s)
-                    RETURNING id""", data).fetchone()
-                log_audit_event(conn, "create", "student", inserted["id"],
-                                {"changed_fields": ["student_record_created"]}) 
-            flash("Student added successfully.", "success")
+                inserted = conn.execute(
+                    """INSERT INTO students (student_number, first_name, last_name, email, attendance,
+                       programming, database, mathematics, networking, web_development)
+                       VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s, 0, 0, 0, 0, 0)
+                       RETURNING id""", data).fetchone()
+                log_audit_event(conn, "create", "student", inserted["id"], {"changed_fields": ["student_record_created"]})
+            flash("Student added. Enroll them in subjects to start recording grades.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
             flash("Student number already exists. Use a unique student number.", "error")
-        except psycopg.errors.ForeignKeyViolation:
-            flash("Could not save student. Please check the submitted information.", "error")
-        return render_template("student_form.html", student=data, subjects=SUBJECTS, page_title="Add student")
-    return render_template("student_form.html", student={}, subjects=SUBJECTS, page_title="Add student")
+        return render_template("student_form.html", student=data, subjects=[], page_title="Add student")
+    return render_template("student_form.html", student={}, subjects=[], page_title="Add student")
 
 
 @app.route("/students/<int:student_id>/edit", methods=["GET", "POST"])
@@ -1128,27 +1147,26 @@ def edit_student(student_id):
         existing = conn.execute("SELECT * FROM students WHERE id = %s", (student_id,)).fetchone()
     if not existing: abort(404)
     if request.method == "POST":
-        data, errors = validate_student_form(request.form)
+        data, errors = validate_student_profile_form(request.form)
         if errors:
             for error in errors: flash(error, "error")
             data["id"] = student_id
-            return render_template("student_form.html", student=data, subjects=SUBJECTS, page_title="Edit student")
+            return render_template("student_form.html", student=data, subjects=[], page_title="Edit student")
         try:
             with db_connection() as conn:
-                conn.execute("""UPDATE students SET student_number=%(student_number)s, first_name=%(first_name)s,
-                    last_name=%(last_name)s, email=%(email)s, attendance=%(attendance)s, programming=%(programming)s,
-                    database=%(database)s, mathematics=%(mathematics)s, networking=%(networking)s,
-                    web_development=%(web_development)s, updated_at=CURRENT_TIMESTAMP WHERE id=%(id)s""",
+                conn.execute(
+                    """UPDATE students SET student_number=%(student_number)s, first_name=%(first_name)s,
+                       last_name=%(last_name)s, email=%(email)s, attendance=%(attendance)s,
+                       updated_at=CURRENT_TIMESTAMP WHERE id=%(id)s""",
                     {**data, "id": student_id})
-                log_audit_event(conn, "update", "student", student_id,
-                                {"changed_fields": sorted(data.keys())})
-            flash("Student updated successfully.", "success")
+                log_audit_event(conn, "update", "student", student_id, {"changed_fields": sorted(data.keys())})
+            flash("Student details updated.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
             flash("Student number already exists. Use a unique student number.", "error")
             data["id"] = student_id
-            return render_template("student_form.html", student=data, subjects=SUBJECTS, page_title="Edit student")
-    return render_template("student_form.html", student=existing, subjects=SUBJECTS, page_title="Edit student")
+            return render_template("student_form.html", student=data, subjects=[], page_title="Edit student")
+    return render_template("student_form.html", student=existing, subjects=[], page_title="Edit student")
 
 
 @app.post("/students/<int:student_id>/delete")
