@@ -117,3 +117,11 @@ py -m flask --app app reset-admin-password
 These commands prompt for account details and passwords. Do not paste database credentials or recovery codes into chat or commit them to the repository.
 
 The database schema is applied by `flask --app app init-db` and the configured Render startup command. The `session_version` migration and audit table are additive and do not delete student records.
+
+
+## Account tracking and Excel sign-in report
+- Every administrator and student record receives a unique tracker ID.
+- Successful administrator sign-ins are recorded in the sign-in log without storing passwords or session secrets.
+- Administrators can download **Sign-in Excel Report** from the sidebar. The workbook includes filterable Excel tables with header rows on the **Sign-in Logs** and **Account Directory** sheets.
+- The directory lists admin accounts and student records, including tracker IDs and sign-in counts. Student sign-in counts will populate when student authentication is implemented; the current branch does not yet include a student sign-in route.
+- The report is restricted to authenticated administrators.
