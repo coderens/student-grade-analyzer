@@ -533,7 +533,7 @@ def add_student():
                     %(programming)s, %(database)s, %(mathematics)s, %(networking)s, %(web_development)s)
                     RETURNING id""", data).fetchone()
                 log_audit_event(conn, "create", "student", inserted["id"],
-                                {"student_number": data["student_number"]}) 
+                                {"changed_fields": ["student_record_created"]}) 
             flash("Student added successfully.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
@@ -583,7 +583,7 @@ def delete_student(student_id):
         ).fetchone()
         if deleted:
             log_audit_event(conn, "delete", "student", student_id,
-                            {"student_number": deleted["student_number"]})
+                            {"changed_fields": ["student_record_deleted"]})
     flash("Student deleted." if deleted else "Student record not found.", "success" if deleted else "error")
     return redirect(url_for("students_page"))
 
