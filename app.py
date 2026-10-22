@@ -3,6 +3,8 @@ import io
 import os
 import secrets
 import hmac
+import math
+from urllib.parse import urljoin, urlparse
 from datetime import datetime
 
 import psycopg
@@ -17,8 +19,17 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "change-this-development-secret-before-deployment")
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+_secret_key = os.getenv("SECRET_KEY")
+_is_production = os.getenv("RENDER", "").lower() == "true" or os.getenv("FLASK_ENV", "").lower() == "production"
+if not _secret_key and _is_production:
+    raise RuntimeError("SECRET_KEY must be set in the production environment.")
+app.secret_key = _secret_key or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=_is_production,
+    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+)
 
 
 @app.before_request
@@ -123,6 +134,15 @@ def fetch_students(search=""):
         else:
             rows = conn.execute("SELECT * FROM students ORDER BY last_name, first_name").fetchall()
     return [enrich_student(r) for r in rows]
+
+
+def is_safe_redirect_target(target):
+    """Only allow relative redirects that stay on this site."""
+    if not target:
+        return False
+    host_url = urlparse(request.host_url)
+    redirect_url = urlparse(urljoin(request.host_url, target))
+    return redirect_url.scheme in ("http", "https") and host_url.netloc == redirect_url.netloc
 
 
 def login_required(view):
@@ -308,7 +328,8 @@ def forgot_password():
             session["password_reset_stage"] = "verify"
             flash("If the account and recovery contact are valid, a verification code has been sent.", "success")
             return redirect(url_for("verify_password_reset"))
-        flash("We couldn't send a code to that recovery contact. Check the registered contact or contact the system administrator.", "error")
+        # Keep the response generic to avoid revealing which usernames have recovery contacts.
+        flash("If the account and recovery contact are valid, recovery instructions will be sent. If no message arrives, contact the system administrator.", "success")
     return render_template("forgot_password.html")
 
 
@@ -387,7 +408,8 @@ def login():
             session.clear()
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            next_url = request.args.get("next", "")
+            return redirect(next_url if is_safe_redirect_target(next_url) else url_for("dashboard"))
         flash("Invalid username or password.", "error")
     return render_template("login.html")
 
@@ -433,14 +455,20 @@ def validate_student_form(form):
         value = form.get(field, "").strip()
         if not value:
             errors.append(f"{label} is required.")
+        elif len(value) > (40 if field == "student_number" else 100):
+            errors.append(f"{label} is too long.")
         data[field] = value
     data["email"] = form.get("email", "").strip() or None
-    if data["email"] and ("@" not in data["email"] or "." not in data["email"].split("@")[-1]):
+    if data["email"] and (
+        len(data["email"]) > 255
+        or "@" not in data["email"]
+        or "." not in data["email"].rsplit("@", 1)[-1]
+    ):
         errors.append("Enter a valid email address or leave it blank.")
     try:
         data["attendance"] = float(form.get("attendance", ""))
-        if not 0 <= data["attendance"] <= 100:
-            errors.append("Attendance must be between 0 and 100.")
+        if not math.isfinite(data["attendance"]) or not 0 <= data["attendance"] <= 100:
+            errors.append("Attendance must be a finite number between 0 and 100.")
     except ValueError:
         data["attendance"] = 0
         errors.append("Attendance must be a number.")
@@ -448,8 +476,8 @@ def validate_student_form(form):
         key = subject.lower().replace(" ", "_")
         try:
             data[key] = float(form.get(key, ""))
-            if not 0 <= data[key] <= 100:
-                errors.append(f"{subject} grade must be between 0 and 100.")
+            if not math.isfinite(data[key]) or not 0 <= data[key] <= 100:
+                errors.append(f"{subject} grade must be a finite number between 0 and 100.")
         except ValueError:
             data[key] = 0
             errors.append(f"{subject} grade must be a number.")
@@ -589,4 +617,4 @@ def server_error(_error):
 
 
 if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
+    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
