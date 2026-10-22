@@ -78,3 +78,14 @@ CREATE TABLE IF NOT EXISTS sign_in_logs (
 );
 CREATE INDEX IF NOT EXISTS sign_in_logs_signed_in_idx ON sign_in_logs (signed_in_at DESC);
 CREATE INDEX IF NOT EXISTS sign_in_logs_account_idx ON sign_in_logs (account_type, account_id, signed_in_at DESC);
+
+CREATE TABLE IF NOT EXISTS student_accounts (
+    id BIGSERIAL PRIMARY KEY,
+    student_id BIGINT NOT NULL UNIQUE REFERENCES students(id) ON DELETE CASCADE,
+    password_hash TEXT NOT NULL,
+    status VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TIMESTAMPTZ,
+    reviewed_by_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS student_accounts_status_idx ON student_accounts (status, created_at DESC);
