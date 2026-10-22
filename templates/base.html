@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}GradePilot{% endblock %} | Student Grade Analyzer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+{% if session.get('admin_id') %}
+<aside class="sidebar">
+  <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-icon">G</span><span>GradePilot<small>ACADEMIC ANALYTICS</small></span></a>
+  <div class="nav-label">WORKSPACE</div>
+  <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">▦ &nbsp; Dashboard</a>
+  <a class="nav-link {% if request.endpoint in ['students_page','add_student','edit_student','student_detail'] %}active{% endif %}" href="{{ url_for('students_page') }}">♙ &nbsp; Students</a>
+  <div class="nav-label">REPORTS</div>
+  <a class="nav-link" href="{{ url_for('export_csv') }}">⇩ &nbsp; Export CSV</a>
+  <a class="nav-link" href="{{ url_for('export_pdf') }}">▤ &nbsp; Export PDF</a>
+  <div class="sidebar-bottom"><div class="avatar">{{ session.get('admin_username','A')[:1].upper() }}</div><div class="admin-info"><b>{{ session.get('admin_username') }}</b><small>Administrator</small></div><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" title="Log out">↪</button></form></div>
+</aside>
+{% endif %}
+<main class="main {% if not session.get('admin_id') %}main-auth{% endif %}">
+  {% if session.get('admin_id') %}<header class="topbar"><div><span class="eyebrow">STUDENT GRADE MANAGEMENT</span><h1>{% block page_heading %}Dashboard{% endblock %}</h1></div><div class="topbar-date">● &nbsp; Local system <span>{{ now_label if now_label else 'Ready' }}</span></div></header>{% endif %}
+  <section class="content">
+    {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="flash-stack">{% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+    {% block content %}{% endblock %}
+  </section>
+</main>
+</body></html>
