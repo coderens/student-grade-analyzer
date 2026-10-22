@@ -206,7 +206,7 @@ def login():
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             return redirect(request.args.get("next") or url_for("dashboard"))
-        flash("Invalid username or password. If you don’t have an account, please contact the IT Department to request administrator access.", "error")
+        flash("Invalid username or password.", "error")
     return render_template("login.html")
 
 
