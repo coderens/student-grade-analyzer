@@ -975,25 +975,40 @@ def subject_detail(subject_id):
 @app.post("/subjects/<int:subject_id>/enroll")
 @login_required
 def enroll_student(subject_id):
-    student_id = request.form.get("student_id", type=int)
+    # Enroll an existing student by student number, without a dropdown.
+    student_number = request.form.get("student_number", "").strip()
     academic_year = request.form.get("academic_year", "2026-2027").strip()
     semester = request.form.get("semester", "1st Semester").strip()
-    if not student_id or not academic_year or len(academic_year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer"):
-        flash("Choose a student, academic year, and valid semester.", "error")
+    if not student_number or len(student_number) > 40 or not academic_year or len(academic_year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer"):
+        flash("Enter a student number, academic year, and valid semester.", "error")
         return redirect(url_for("subject_detail", subject_id=subject_id))
     try:
         with db_connection() as conn:
+            subject = conn.execute(
+                "SELECT id, subject_name FROM subjects WHERE id = %s AND is_active = TRUE",
+                (subject_id,)
+            ).fetchone()
+            if not subject:
+                flash("This subject is not active and cannot accept enrollments.", "error")
+                return redirect(url_for("subjects_page"))
+            student = conn.execute(
+                "SELECT id, first_name, last_name FROM students WHERE student_number = %s",
+                (student_number,)
+            ).fetchone()
+            if not student:
+                flash("No student found with that student number. Use + Add Student to create a new profile.", "error")
+                return redirect(url_for("subject_detail", subject_id=subject_id))
             enrollment = conn.execute(
                 """INSERT INTO student_subjects (student_id, subject_id, academic_year, semester)
                    VALUES (%s, %s, %s, %s) RETURNING id""",
-                (student_id, subject_id, academic_year, semester)).fetchone()
+                (student["id"], subject_id, academic_year, semester)).fetchone()
             log_audit_event(conn, "enroll", "student_subject", enrollment["id"],
-                            {"student_id": student_id, "subject_id": subject_id, "academic_year": academic_year, "semester": semester})
-        flash("Student enrolled in this subject.", "success")
+                            {"student_id": student["id"], "subject_id": subject_id, "academic_year": academic_year, "semester": semester})
+        flash(f'{student["first_name"]} {student["last_name"]} enrolled successfully.', "success")
     except psycopg.errors.UniqueViolation:
         flash("This student is already enrolled in that subject for the selected year and semester.", "error")
     except psycopg.errors.ForeignKeyViolation:
-        flash("Student or subject was not found.", "error")
+        flash("The student or subject was not found. Refresh the page and try again.", "error")
     return redirect(url_for("subject_detail", subject_id=subject_id))
 
 
