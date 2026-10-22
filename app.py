@@ -992,7 +992,8 @@ def student_suggestions(subject_id):
             """SELECT st.student_number, st.first_name, st.last_name, st.email
                FROM students st
                WHERE (st.student_number ILIKE %s OR st.first_name ILIKE %s
-                      OR st.last_name ILIKE %s OR (st.first_name || ' ' || st.last_name) ILIKE %s)
+                      OR st.last_name ILIKE %s OR (st.first_name || ' ' || st.last_name) ILIKE %s
+                      OR COALESCE(st.email, '') ILIKE %s)
                  AND NOT EXISTS (
                      SELECT 1 FROM student_subjects ss
                      WHERE ss.student_id = st.id AND ss.subject_id = %s
@@ -1000,7 +1001,7 @@ def student_suggestions(subject_id):
                  )
                ORDER BY st.last_name, st.first_name
                LIMIT 8""",
-            (pattern, pattern, pattern, pattern, subject_id, academic_year, semester)
+            (pattern, pattern, pattern, pattern, pattern, subject_id, academic_year, semester)
         ).fetchall()
     return jsonify({"students": [
         {"student_number": row["student_number"],
