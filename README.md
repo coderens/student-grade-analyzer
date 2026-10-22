@@ -121,7 +121,9 @@ The database schema is applied by `flask --app app init-db` and the configured R
 
 ## Account tracking and Excel sign-in report
 - Every administrator and student record receives a unique tracker ID.
-- Successful administrator sign-ins are recorded in the sign-in log without storing passwords or session secrets.
+- Successful administrator sign-ins and approved student sign-ins are recorded without storing passwords or session secrets.
+- Students use the separate **Student sign in** and **Request access** pages. Registration must match an existing student number and school-record email, and stays pending until an administrator approves it from **Student Account Approvals**.
+- Administrators should independently verify a student's identity before approving; matching the stored email is not email verification.
+- Students can view only their own grade record after approval. Admin and student sessions use separate session keys.
 - Administrators can download **Sign-in Excel Report** from the sidebar. The workbook includes filterable Excel tables with header rows on the **Sign-in Logs** and **Account Directory** sheets.
-- The directory lists admin accounts and student records, including tracker IDs and sign-in counts. Student sign-in counts will populate when student authentication is implemented; the current branch does not yet include a student sign-in route.
-- The report is restricted to authenticated administrators.
+- The directory lists admin accounts and student records, including tracker IDs and sign-in counts. The report is restricted to authenticated administrators.
