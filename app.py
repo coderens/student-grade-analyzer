@@ -380,9 +380,6 @@ def server_error(_error):
     return render_template("error.html", code=500, message="An unexpected error occurred. Check the terminal for details."), 500
 
 
-if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
-
 
 def student_login_required(view):
     from functools import wraps
@@ -498,3 +495,6 @@ def student_portal():
 def student_logout():
     session.clear()
     return redirect(url_for("student_login"))
+
+if __name__ == "__main__":
+    app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
