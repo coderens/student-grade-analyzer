@@ -32,7 +32,7 @@ if not _database_url and _is_production:
     raise RuntimeError("DATABASE_URL must be set in the production environment.")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "true" if _is_production else "false").lower() == "true",
+    SESSION_COOKIE_SECURE=_is_production or os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
     SESSION_COOKIE_SAMESITE="Lax",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
     SESSION_REFRESH_EACH_REQUEST=True,
