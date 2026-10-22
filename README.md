@@ -4,10 +4,11 @@ A local, rule-based Flask + PostgreSQL web application. It does **not** use AI, 
 
 ## Features
 - Admin sign-in with Werkzeug password hashing and server-side session authentication
-- Student CRUD: create, view, edit, delete, and search
-- Five equally weighted subjects: Programming, Database, Mathematics, Networking, Web Development
+- Student profiles and subject-specific enrollment lists
+- Create subjects, enroll students, and record editable Midterms and Finals grades per subject
 - Dashboard cards and Chart.js pass/fail and subject-average charts
-- CSV and PDF exports
+- Grade history with edit/delete audit trail; GWA and estimated Dean's List status
+- CSV and Excel import, plus Excel/CSV/PDF report exports
 - PostgreSQL constraints for grade and attendance ranges
 
 ## Requirements
