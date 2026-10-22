@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, Response, abort, g
 from werkzeug.security import check_password_hash, generate_password_hash
+from psycopg.types.json import Jsonb
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -149,10 +150,30 @@ def login_required(view):
     from functools import wraps
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if "admin_id" not in session:
+        admin_id = session.get("admin_id")
+        if not admin_id:
             return redirect(url_for("login", next=request.path))
+        # Re-check the session version so password changes revoke existing sessions.
+        with db_connection() as conn:
+            current = conn.execute(
+                "SELECT session_version FROM admins WHERE id = %s", (admin_id,)
+            ).fetchone()
+        if not current or current["session_version"] != session.get("session_version"):
+            session.clear()
+            flash("Your session has expired. Please sign in again.", "error")
+            return redirect(url_for("login"))
         return view(*args, **kwargs)
     return wrapped
+
+
+def log_audit_event(conn, action, entity_type, entity_id=None, details=None, actor_admin_id=None):
+    """Write a minimal audit record in the same transaction as the change."""
+    actor_id = actor_admin_id if actor_admin_id is not None else session.get("admin_id")
+    conn.execute(
+        """INSERT INTO audit_logs (actor_admin_id, action, entity_type, entity_id, details)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (actor_id, action, entity_type, entity_id, Jsonb(details or {}))
+    )
 
 
 def init_db():
@@ -201,7 +222,7 @@ def reset_admin_password_command():
         raise SystemExit("Passwords do not match.")
     with db_connection() as conn:
         result = conn.execute(
-            "UPDATE admins SET password_hash = %s WHERE username = %s RETURNING id",
+            "UPDATE admins SET password_hash = %s, session_version = session_version + 1 WHERE username = %s RETURNING id",
             (generate_password_hash(password), username)
         ).fetchone()
         if not result:
@@ -387,9 +408,13 @@ def reset_password():
                 session.pop("password_reset_stage", None)
                 flash("The recovery session expired. Start again.", "error")
                 return redirect(url_for("forgot_password"))
-            conn.execute("UPDATE admins SET password_hash = %s WHERE id = %s",
-                         (generate_password_hash(password), reset_row["admin_id"]))
+            conn.execute(
+                "UPDATE admins SET password_hash = %s, session_version = session_version + 1 WHERE id = %s",
+                (generate_password_hash(password), reset_row["admin_id"])
+            )
             conn.execute("UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = %s", (reset_id,))
+            log_audit_event(conn, "password_reset", "admin", reset_row["admin_id"],
+                            {"method": "verified_recovery"}, actor_admin_id=None)
         session.pop("password_reset_id", None)
         session.pop("password_reset_stage", None)
         flash("Password changed successfully. Please sign in.", "success")
@@ -408,6 +433,7 @@ def login():
             session.clear()
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
+            session["session_version"] = admin["session_version"]
             next_url = request.args.get("next", "")
             return redirect(next_url if is_safe_redirect_target(next_url) else url_for("dashboard"))
         flash("Invalid username or password.", "error")
@@ -501,10 +527,13 @@ def add_student():
             return render_template("student_form.html", student=data, subjects=SUBJECTS, page_title="Add student")
         try:
             with db_connection() as conn:
-                conn.execute("""INSERT INTO students (student_number, first_name, last_name, email, attendance,
+                inserted = conn.execute("""INSERT INTO students (student_number, first_name, last_name, email, attendance,
                     programming, database, mathematics, networking, web_development)
                     VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s,
-                    %(programming)s, %(database)s, %(mathematics)s, %(networking)s, %(web_development)s)""", data)
+                    %(programming)s, %(database)s, %(mathematics)s, %(networking)s, %(web_development)s)
+                    RETURNING id""", data).fetchone()
+                log_audit_event(conn, "create", "student", inserted["id"],
+                                {"student_number": data["student_number"]}) 
             flash("Student added successfully.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
@@ -534,6 +563,8 @@ def edit_student(student_id):
                     database=%(database)s, mathematics=%(mathematics)s, networking=%(networking)s,
                     web_development=%(web_development)s, updated_at=CURRENT_TIMESTAMP WHERE id=%(id)s""",
                     {**data, "id": student_id})
+                log_audit_event(conn, "update", "student", student_id,
+                                {"changed_fields": sorted(data.keys())})
             flash("Student updated successfully.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
@@ -547,8 +578,13 @@ def edit_student(student_id):
 @login_required
 def delete_student(student_id):
     with db_connection() as conn:
-        result = conn.execute("DELETE FROM students WHERE id = %s", (student_id,))
-    flash("Student deleted." if result.rowcount else "Student record not found.", "success" if result.rowcount else "error")
+        deleted = conn.execute(
+            "DELETE FROM students WHERE id = %s RETURNING student_number", (student_id,)
+        ).fetchone()
+        if deleted:
+            log_audit_event(conn, "delete", "student", student_id,
+                            {"student_number": deleted["student_number"]})
+    flash("Student deleted." if deleted else "Student record not found.", "success" if deleted else "error")
     return redirect(url_for("students_page"))
 
 
