@@ -1,6 +1,6 @@
 import unittest
 
-from app import app, get_letter_grade, get_status, validate_student_form, is_safe_redirect_target
+from app import app, get_letter_grade, get_status, validate_student_form, validate_student_profile_form, percentage_to_grade_point, validate_grade, is_safe_redirect_target
 
 
 class GradePilotValidationTests(unittest.TestCase):
@@ -107,6 +107,43 @@ class GradePilotValidationTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS student_accounts", schema)
         self.assertIn("DEFAULT 'pending'", schema)
         self.assertIn("CHECK (status IN ('pending', 'approved'))", schema)
+
+
+    def test_subject_based_grade_conversion(self):
+        self.assertEqual(percentage_to_grade_point(97), 1.00)
+        self.assertEqual(percentage_to_grade_point(88), 1.75)
+        self.assertEqual(percentage_to_grade_point(75), 3.00)
+        self.assertEqual(percentage_to_grade_point(74.99), 5.00)
+
+    def test_grade_input_rejects_non_finite_and_out_of_range_values(self):
+        self.assertIsNone(validate_grade("nan"))
+        self.assertIsNone(validate_grade("inf"))
+        self.assertIsNone(validate_grade("101"))
+        self.assertEqual(validate_grade("88.5"), 88.5)
+
+    def test_student_profile_does_not_require_fixed_subject_grades(self):
+        profile = {
+            "student_number": "STU-002", "first_name": "Jamie", "last_name": "Reyes",
+            "email": "jamie@example.com", "attendance": "95"
+        }
+        data, errors = validate_student_profile_form(profile)
+        self.assertEqual(errors, [])
+        self.assertEqual(data["student_number"], "STU-002")
+
+    def test_subject_and_grade_history_schema_exists(self):
+        with open("schema.sql", encoding="utf-8") as schema_file:
+            schema = schema_file.read()
+        self.assertIn("CREATE TABLE IF NOT EXISTS subjects", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS student_subjects", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS grade_records", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS grade_record_history", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS grading_policies", schema)
+
+    def test_grade_import_and_export_routes_require_admin_login(self):
+        client = app.test_client()
+        self.assertEqual(client.get("/admin/grade-import").status_code, 302)
+        self.assertEqual(client.get("/export/grade-report.xlsx").status_code, 302)
+        self.assertEqual(client.get("/admin/grade-import-template.csv").status_code, 302)
 
 if __name__ == "__main__":
     unittest.main()
