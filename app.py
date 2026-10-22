@@ -561,7 +561,7 @@ def student_portal():
     if not row:
         session.clear()
         return redirect(url_for("student_login"))
-    return render_template("student_portal.html", student=enrich_student(row))
+    return render_template("student_portal.html", student=enrich_student(row), subjects=SUBJECTS)
 
 
 @app.post("/student/logout")
