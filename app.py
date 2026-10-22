@@ -4,6 +4,7 @@ import os
 import secrets
 import hmac
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import psycopg
 from psycopg.rows import dict_row
@@ -18,13 +19,20 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 load_dotenv()
 app = Flask(__name__)
 _secret_key = os.getenv("SECRET_KEY")
-_is_production = os.getenv("RENDER") == "true" or os.getenv("FLASK_ENV") == "production"
+_is_production = (
+    os.getenv("RENDER", "").lower() == "true"
+    or bool(os.getenv("RENDER_SERVICE_ID"))
+    or os.getenv("FLASK_ENV") == "production"
+)
 if not _secret_key and _is_production:
     raise RuntimeError("SECRET_KEY must be set in the production environment.")
 app.secret_key = _secret_key or secrets.token_hex(32)
+_database_url = os.getenv("DATABASE_URL")
+if not _database_url and _is_production:
+    raise RuntimeError("DATABASE_URL must be set in the production environment.")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SECURE=_is_production,
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "true" if _is_production else "false").lower() == "true",
     SESSION_COOKIE_SAMESITE="Lax",
     PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
     SESSION_REFRESH_EACH_REQUEST=True,
@@ -48,7 +56,28 @@ def add_security_headers(response):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
+
+
+def safe_next_url(target):
+    """Accept only a local absolute path; reject external and scheme-relative redirects."""
+    if not target or "\\" in target:
+        return None
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        return None
+    return target
+
+
+def safe_csv_cell(value):
+    """Prevent spreadsheet formula execution from untrusted text fields in CSV exports."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
 
 
 def password_validation_error(password):
@@ -70,7 +99,7 @@ SUBJECTS = ["Programming", "Database", "Mathematics", "Networking", "Web Develop
 
 
 def db_connection():
-    dsn = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/student_grades")
+    dsn = _database_url or "postgresql://postgres:postgres@localhost:5432/student_grades"
     return psycopg.connect(dsn, row_factory=dict_row)
 
 
@@ -210,7 +239,8 @@ def login():
             session.permanent = True
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            destination = safe_next_url(request.args.get("next"))
+            return redirect(destination or url_for("dashboard"))
         flash("Invalid username or password. If you don’t have an account, please contact the IT Department to request administrator access.", "error")
     return render_template("login.html")
 
@@ -365,9 +395,10 @@ def export_csv():
     writer.writerow(["Student Number", "First Name", "Last Name", "Email", "Attendance", *SUBJECTS,
                      "Average", "Letter Grade", "Academic Status", "Performance", "Scholarship", "Warning"])
     for s in students:
-        writer.writerow([s["student_number"], s["first_name"], s["last_name"], s["email"] or "", s["attendance"],
-                         *[s[sub.lower().replace(" ", "_")] for sub in SUBJECTS], s["average"], s["letter_grade"],
-                         s["status"], s["performance"], s["scholarship"], s["warning"]])
+        row = [s["student_number"], s["first_name"], s["last_name"], s["email"] or "", s["attendance"],
+               *[s[sub.lower().replace(" ", "_")] for sub in SUBJECTS], s["average"], s["letter_grade"],
+               s["status"], s["performance"], s["scholarship"], s["warning"]]
+        writer.writerow([safe_csv_cell(value) for value in row])
     return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
                     headers={"Content-Disposition": "attachment; filename=student_grade_report.csv"})
 
@@ -416,10 +447,30 @@ def student_login_required(view):
     from functools import wraps
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if "student_account_id" not in session:
+        account_id = session.get("student_account_id")
+        student_id = session.get("student_id")
+        if not account_id or not student_id:
             return redirect(url_for("student_login", next=request.path))
+        # Re-check status so an administrator can revoke access immediately.
+        with db_connection() as conn:
+            account = conn.execute(
+                "SELECT id FROM student_accounts WHERE id = %s AND student_id = %s AND is_active = TRUE",
+                (account_id, student_id),
+            ).fetchone()
+        if not account:
+            session.clear()
+            flash("Your session is no longer active. Please sign in again.", "error")
+            return redirect(url_for("student_login"))
         return view(*args, **kwargs)
     return wrapped
+
+
+PRIVACY_NOTICE_VERSION = "1.0"
+
+
+@app.get("/privacy")
+def privacy_notice():
+    return render_template("privacy.html", privacy_notice_version=PRIVACY_NOTICE_VERSION)
 
 
 @app.route("/student/login", methods=["GET", "POST"])
@@ -439,7 +490,8 @@ def student_login():
             session["student_account_id"] = account["id"]
             session["student_id"] = account["student_id"]
             session["student_name"] = account["first_name"] + " " + account["last_name"]
-            return redirect(url_for("student_portal"))
+            destination = safe_next_url(request.args.get("next"))
+            return redirect(destination or url_for("student_portal"))
         flash("Unable to sign in. Check your credentials or contact the school administrator if your account is awaiting approval.", "error")
     return render_template("student_login.html")
 
@@ -457,6 +509,8 @@ def student_register():
             flash(password_validation_error(password), "error")
         elif password != confirm_password:
             flash("Passwords do not match.", "error")
+        elif request.form.get("privacy_ack") != "on":
+            flash("Please read and acknowledge the privacy notice before registering.", "error")
         else:
             try:
                 with db_connection() as conn:
@@ -475,8 +529,9 @@ def student_register():
                             flash("An account already exists for this student or email. Please sign in.", "error")
                         else:
                             conn.execute(
-                                "INSERT INTO student_accounts (student_id, email, password_hash, is_active) VALUES (%s, %s, %s, FALSE)",
-                                (student["id"], email, generate_password_hash(password))
+                                "INSERT INTO student_accounts (student_id, email, password_hash, is_active, privacy_notice_version, privacy_notice_acknowledged_at) "
+                                "VALUES (%s, %s, %s, FALSE, %s, CURRENT_TIMESTAMP)",
+                                (student["id"], email, generate_password_hash(password), PRIVACY_NOTICE_VERSION)
                             )
                             flash("Your registration request has been submitted. A school administrator must approve access before you can view student records.", "success")
                             return redirect(url_for("student_login"))
@@ -567,4 +622,4 @@ def student_logout():
     return redirect(url_for("student_login"))
 
 if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
+    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
