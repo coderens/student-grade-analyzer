@@ -22,7 +22,7 @@ This checklist is an implementation aid, not a certification of compliance with 
 
 ## Known limitations to address in future work
 - Add a formal password-reset flow using verified school email or an approved identity provider.
-- Add robust persistent rate limiting and monitoring for failed sign-in attempts.
+- Add network-level abuse monitoring and security alerting alongside the database-backed per-identifier sign-in throttling.
 - Consider MFA for administrator accounts.
 - Add automated security tests and dependency scanning in CI.
 - Decide whether admin roles should be separated (e.g., records manager vs. account approver) and enforce least privilege.
