@@ -884,7 +884,37 @@ def subjects_page():
                FROM subjects sub LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
                WHERE sub.is_active = TRUE GROUP BY sub.id ORDER BY sub.subject_name"""
         ).fetchall()
-    return render_template("subjects.html", subjects=subjects)
+    with db_connection() as conn:
+        policy = conn.execute("SELECT dean_list_gwa_max, max_subject_gwa FROM grading_policies WHERE id = 1").fetchone()
+    return render_template("subjects.html", subjects=subjects, policy=policy)
+
+
+
+@app.post("/admin/grading-policy")
+@login_required
+def update_grading_policy():
+    dean_max = validate_grade_point(request.form.get("dean_list_gwa_max", ""))
+    subject_max = validate_grade_point(request.form.get("max_subject_gwa", ""))
+    if dean_max is None or subject_max is None or not 1 <= dean_max <= 5 or not 1 <= subject_max <= 5:
+        flash("GWA policy values must be numbers from 1.00 to 5.00.", "error")
+    else:
+        with db_connection() as conn:
+            conn.execute(
+                """UPDATE grading_policies SET dean_list_gwa_max = %s, max_subject_gwa = %s,
+                   updated_at = CURRENT_TIMESTAMP WHERE id = 1""",
+                (dean_max, subject_max))
+            log_audit_event(conn, "update", "grading_policy", 1,
+                            {"dean_list_gwa_max": dean_max, "max_subject_gwa": subject_max})
+        flash("Dean's List policy saved. Student statuses and reports will use the updated values.", "success")
+    return redirect(url_for("subjects_page"))
+
+
+def validate_grade_point(value):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) and 1 <= result <= 5 else None
 
 
 @app.get("/subjects/<int:subject_id>")
@@ -1243,7 +1273,7 @@ def export_pdf():
                 Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]), Spacer(1, 12)]
     data = [["Student No.", "Student Name", "Average", "Letter", "Status", "Performance", "Attendance", "Scholarship"]]
     for s in students:
-        data.append([s["student_number"], f'{s["first_name"]} {s["last_name"]}', f'{s["average"]:.2f}',
+        data.append([s["student_number"], f'{s["first_name"]} {s["last_name"]}', f'{s["average"]:.2f}' if s["average"] is not None else "—",
                      s["letter_grade"], s["status"], s["performance"], f'{s["attendance"]:.1f}%', s["scholarship"]])
     table = Table(data, repeatRows=1, colWidths=[75, 125, 55, 45, 55, 95, 65, 80])
     table.setStyle(TableStyle([
