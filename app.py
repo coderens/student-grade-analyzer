@@ -10,7 +10,7 @@ from datetime import datetime
 import psycopg
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
-from flask import Flask, flash, redirect, render_template, request, session, url_for, Response, abort, g
+from flask import Flask, flash, redirect, render_template, request, session, url_for, Response, abort, g, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 from psycopg.types.json import Jsonb
 from openpyxl import Workbook, load_workbook
@@ -970,6 +970,44 @@ def subject_detail(subject_id):
         ).fetchall()
     if not subject: abort(404)
     return render_template("subject_detail.html", subject=subject, students=students, available_students=available_students)
+
+
+@app.get("/subjects/<int:subject_id>/student-suggestions")
+@login_required
+def student_suggestions(subject_id):
+    """Return matching students who are not yet enrolled for the selected term."""
+    query = request.args.get("q", "").strip()
+    academic_year = request.args.get("academic_year", "2026-2027").strip()
+    semester = request.args.get("semester", "1st Semester").strip()
+    if len(query) < 2 or not academic_year or len(academic_year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer"):
+        return jsonify({"students": []})
+    pattern = f"%{query}%"
+    with db_connection() as conn:
+        subject = conn.execute(
+            "SELECT id FROM subjects WHERE id = %s AND is_active = TRUE", (subject_id,)
+        ).fetchone()
+        if not subject:
+            return jsonify({"students": []}), 404
+        matches = conn.execute(
+            """SELECT st.student_number, st.first_name, st.last_name, st.email
+               FROM students st
+               WHERE (st.student_number ILIKE %s OR st.first_name ILIKE %s
+                      OR st.last_name ILIKE %s OR (st.first_name || ' ' || st.last_name) ILIKE %s)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM student_subjects ss
+                     WHERE ss.student_id = st.id AND ss.subject_id = %s
+                       AND ss.academic_year = %s AND ss.semester = %s
+                 )
+               ORDER BY st.last_name, st.first_name
+               LIMIT 8""",
+            (pattern, pattern, pattern, pattern, subject_id, academic_year, semester)
+        ).fetchall()
+    return jsonify({"students": [
+        {"student_number": row["student_number"],
+         "name": f'{row["first_name"]} {row["last_name"]}',
+         "email": row["email"] or ""}
+        for row in matches
+    ]})
 
 
 @app.post("/subjects/<int:subject_id>/enroll")
