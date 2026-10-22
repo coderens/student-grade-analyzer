@@ -693,8 +693,9 @@ def student_accounts_admin():
             """SELECT sa.id AS account_id, sa.status, sa.created_at,
                       st.student_number, st.first_name, st.last_name, st.email
                FROM student_accounts sa JOIN students st ON st.id = sa.student_id
-               ORDER BY CASE WHEN sa.status = 'pending' THEN 0 ELSE 1 END, sa.created_at DESC"""
-        ).fetchall()
+               WHERE st.owner_admin_id = %s
+               ORDER BY CASE WHEN sa.status = 'pending' THEN 0 ELSE 1 END, sa.created_at DESC""",
+            (session["admin_id"],)).fetchall()
     return render_template("student_accounts.html", accounts=accounts)
 
 
@@ -703,10 +704,13 @@ def student_accounts_admin():
 def approve_student_account(account_id):
     with db_connection() as conn:
         updated = conn.execute(
-            """UPDATE student_accounts SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP,
+            """UPDATE student_accounts sa SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP,
                       reviewed_by_admin_id = %s
-               WHERE id = %s AND status = 'pending' RETURNING id""",
-            (session["admin_id"], account_id)
+               WHERE sa.id = %s AND sa.status = 'pending'
+                 AND EXISTS (SELECT 1 FROM students st
+                             WHERE st.id = sa.student_id AND st.owner_admin_id = %s)
+               RETURNING sa.id""",
+            (session["admin_id"], account_id, session["admin_id"])
         ).fetchone()
         if updated:
             log_audit_event(conn, "approve_student_account", "student_account", account_id)
@@ -720,8 +724,12 @@ def approve_student_account(account_id):
 def reject_student_account(account_id):
     with db_connection() as conn:
         deleted = conn.execute(
-            "DELETE FROM student_accounts WHERE id = %s AND status = 'pending' RETURNING id",
-            (account_id,)
+            """DELETE FROM student_accounts sa
+               WHERE sa.id = %s AND sa.status = 'pending'
+                 AND EXISTS (SELECT 1 FROM students st
+                             WHERE st.id = sa.student_id AND st.owner_admin_id = %s)
+               RETURNING sa.id""",
+            (account_id, session["admin_id"])
         ).fetchone()
         if deleted:
             log_audit_event(conn, "reject_student_account", "student_account", account_id)
