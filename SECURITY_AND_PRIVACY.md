@@ -4,7 +4,7 @@ This checklist is an implementation aid, not a certification of compliance with 
 
 ## Application safeguards
 - Set a unique, random `SECRET_KEY` in Render; never commit it or share it.
-- Set `DATABASE_URL` only in Render's secret environment settings. Use a least-privilege database role where supported.
+- Keep `DATABASE_URL` in environment settings (Render environment settings in production, or a private local `.env` file for development); never commit it. Use a least-privilege database role where supported.
 - Keep `FLASK_DEBUG=false` in production and require HTTPS.
 - Keep student account creation approval-gated. Verify identity through a school-approved process before approving an account.
 - Review admin access periodically and remove access when roles change.
