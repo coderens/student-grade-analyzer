@@ -145,5 +145,23 @@ class GradePilotValidationTests(unittest.TestCase):
         self.assertEqual(client.get("/export/grade-report.xlsx").status_code, 302)
         self.assertEqual(client.get("/admin/grade-import-template.csv").status_code, 302)
 
+
+    def test_new_subject_templates_compile(self):
+        for template_name in (
+            "base.html", "dashboard.html", "student_form.html", "students.html",
+            "student_detail.html", "student_portal.html", "subjects.html",
+            "subject_detail.html", "enrollment_grades.html", "grade_import.html"
+        ):
+            with self.subTest(template=template_name):
+                app.jinja_env.get_template(template_name)
+
+    def test_brand_name_is_updated_in_base_template(self):
+        template = app.jinja_env.get_template("base.html")
+        self.assertIsNotNone(template)
+        with open("templates/base.html", encoding="utf-8") as template_file:
+            source = template_file.read()
+        self.assertIn("passASADO or FAILet", source)
+        self.assertNotIn("GradePilot", source)
+
 if __name__ == "__main__":
     unittest.main()
