@@ -382,3 +382,119 @@ def server_error(_error):
 
 if __name__ == "__main__":
     app.run(debug=os.getenv("FLASK_DEBUG", "true").lower() == "true")
+
+
+def student_login_required(view):
+    from functools import wraps
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if "student_account_id" not in session:
+            return redirect(url_for("student_login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/student/login", methods=["GET", "POST"])
+def student_login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        with db_connection() as conn:
+            account = conn.execute(
+                "SELECT sa.id, sa.password_hash, s.id AS student_id, s.first_name, s.last_name "
+                "FROM student_accounts sa JOIN students s ON s.id = sa.student_id WHERE LOWER(sa.email) = %s",
+                (email,)
+            ).fetchone()
+        if account and check_password_hash(account["password_hash"], password):
+            session.clear()
+            session["student_account_id"] = account["id"]
+            session["student_id"] = account["student_id"]
+            session["student_name"] = account["first_name"] + " " + account["last_name"]
+            return redirect(url_for("student_portal"))
+        flash("Invalid email or password. If you have not registered, create a student account first.", "error")
+    return render_template("student_login.html")
+
+
+@app.route("/student/register", methods=["GET", "POST"])
+def student_register():
+    if request.method == "POST":
+        student_number = request.form.get("student_number", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not student_number or not email:
+            flash("Please complete every field.", "error")
+        elif len(password) < 10:
+            flash("Password must be at least 10 characters long.", "error")
+        elif password != confirm_password:
+            flash("Passwords do not match.", "error")
+        else:
+            try:
+                with db_connection() as conn:
+                    student = conn.execute(
+                        "SELECT id FROM students WHERE student_number = %s AND LOWER(email) = %s",
+                        (student_number, email)
+                    ).fetchone()
+                    if not student:
+                        flash("Student number and email must match an existing school record. Contact your administrator if your details need updating.", "error")
+                    else:
+                        existing = conn.execute(
+                            "SELECT id FROM student_accounts WHERE student_id = %s OR LOWER(email) = %s",
+                            (student["id"], email)
+                        ).fetchone()
+                        if existing:
+                            flash("An account already exists for this student or email. Please sign in.", "error")
+                        else:
+                            conn.execute(
+                                "INSERT INTO student_accounts (student_id, email, password_hash) VALUES (%s, %s, %s)",
+                                (student["id"], email, generate_password_hash(password))
+                            )
+                            flash("Student account created. You can now sign in.", "success")
+                            return redirect(url_for("student_login"))
+            except psycopg.errors.UniqueViolation:
+                flash("An account already exists for this student or email. Please sign in.", "error")
+    return render_template("student_register.html")
+
+
+@app.route("/admin/accounts/create", methods=["GET", "POST"])
+@login_required
+def create_admin_account():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not username:
+            flash("Username is required.", "error")
+        elif len(password) < 10:
+            flash("Password must be at least 10 characters long.", "error")
+        elif password != confirm_password:
+            flash("Passwords do not match.", "error")
+        else:
+            try:
+                with db_connection() as conn:
+                    conn.execute("INSERT INTO admins (username, password_hash) VALUES (%s, %s)",
+                                 (username, generate_password_hash(password)))
+                flash("Administrator account created successfully.", "success")
+                return redirect(url_for("dashboard"))
+            except psycopg.errors.UniqueViolation:
+                flash("That administrator username already exists.", "error")
+    return render_template("admin_register.html")
+
+
+@app.route("/student/portal")
+@student_login_required
+def student_portal():
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM students WHERE id = %s", (session["student_id"],)).fetchone()
+    if not row:
+        session.clear()
+        flash("Your student record could not be found. Contact the school administrator.", "error")
+        return redirect(url_for("student_login"))
+    return render_template("student_portal.html", student=enrich_student(row), subjects=SUBJECTS)
+
+
+@app.post("/student/logout")
+@student_login_required
+def student_logout():
+    session.clear()
+    return redirect(url_for("student_login"))
