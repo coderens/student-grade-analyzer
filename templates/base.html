@@ -2,20 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}GradePilot{% endblock %} | Student Grade Analyzer</title>
+  <title>{% block title %}passASADO or FAILet{% endblock %} | Student Grade Analyzer</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   {% block head %}{% endblock %}
 </head>
 <body>
 {% if session.get('admin_id') %}
 <aside class="sidebar">
-  <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-icon">G</span><span>GradePilot<small>ACADEMIC ANALYTICS</small></span></a>
+  <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-icon">G</span><span>passASADO or FAILet<small>ACADEMIC ANALYTICS</small></span></a>
   <div class="nav-label">WORKSPACE</div>
   <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">▦ &nbsp; Dashboard</a>
   <a class="nav-link {% if request.endpoint in ['students_page','add_student','edit_student','student_detail'] %}active{% endif %}" href="{{ url_for('students_page') }}">♙ &nbsp; Students</a>
+  <a class="nav-link {% if request.endpoint in ['subjects_page','subject_detail','enrollment_grades'] %}active{% endif %}" href="{{ url_for('subjects_page') }}">▤ &nbsp; Subjects</a>
   <a class="nav-link {% if request.endpoint == 'my_activity' %}active{% endif %}" href="{{ url_for('my_activity') }}">◷ &nbsp; My Activity Tracker</a>
   <a class="nav-link {% if request.endpoint == 'student_accounts_admin' %}active{% endif %}" href="{{ url_for('student_accounts_admin') }}">♙ &nbsp; Student Account Approvals</a>
   <div class="nav-label">REPORTS</div>
+  <a class="nav-link {% if request.endpoint == 'import_grade_report' %}active{% endif %}" href="{{ url_for('import_grade_report') }}">⇧ &nbsp; Import grade file</a>
+  <a class="nav-link {% if request.endpoint == 'export_grade_report' %}active{% endif %}" href="{{ url_for('export_grade_report') }}">▦ &nbsp; Export grade report</a>
   <a class="nav-link" href="{{ url_for('export_csv') }}">⇩ &nbsp; Export CSV</a>
   <a class="nav-link" href="{{ url_for('export_pdf') }}">▤ &nbsp; Export PDF</a>
   <a class="nav-link {% if request.endpoint == 'export_sign_in_report' %}active{% endif %}" href="{{ url_for('export_sign_in_report') }}">▦ &nbsp; Sign-in Excel Report</a>
