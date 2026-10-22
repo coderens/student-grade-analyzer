@@ -461,6 +461,161 @@ def reset_password():
     return render_template("reset_password.html")
 
 
+def student_login_required(view):
+    """Require a separate, approved student account session."""
+    from functools import wraps
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        student_id = session.get("student_account_id")
+        if not student_id:
+            return redirect(url_for("student_login", next=request.path))
+        with db_connection() as conn:
+            account = conn.execute(
+                """SELECT sa.student_id, sa.status, st.tracker_id
+                   FROM student_accounts sa
+                   JOIN students st ON st.id = sa.student_id
+                   WHERE sa.id = %s""", (student_id,)
+            ).fetchone()
+        if not account or account["status"] != "approved" or account["student_id"] != session.get("student_record_id"):
+            session.clear()
+            flash("Your student session is no longer active. Please sign in again.", "error")
+            return redirect(url_for("student_login"))
+        session["student_tracker_id"] = str(account["tracker_id"])
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/student/login", methods=["GET", "POST"])
+def student_login():
+    if request.method == "POST":
+        student_number = request.form.get("student_number", "").strip()
+        password = request.form.get("password", "")
+        with db_connection() as conn:
+            account = conn.execute(
+                """SELECT sa.id, sa.student_id, sa.password_hash, sa.status,
+                          st.student_number, st.first_name, st.last_name, st.tracker_id
+                   FROM student_accounts sa
+                   JOIN students st ON st.id = sa.student_id
+                   WHERE st.student_number = %s""", (student_number,)
+            ).fetchone()
+            if account and check_password_hash(account["password_hash"], password):
+                if account["status"] != "approved":
+                    flash("Your account is awaiting administrator approval.", "error")
+                    return render_template("student_login.html")
+                session.clear()
+                session["student_account_id"] = account["id"]
+                session["student_record_id"] = account["student_id"]
+                session["student_number"] = account["student_number"]
+                session["student_name"] = f'{account["first_name"]} {account["last_name"]}'
+                session["student_tracker_id"] = str(account["tracker_id"])
+                log_sign_in(conn, "student", account["student_id"], account["student_number"],
+                            f'{account["first_name"]} {account["last_name"]}', account["tracker_id"])
+                next_url = request.args.get("next", "")
+                return redirect(next_url if is_safe_redirect_target(next_url) else url_for("student_portal"))
+        flash("Invalid student number or password.", "error")
+    return render_template("student_login.html")
+
+
+@app.route("/student/register", methods=["GET", "POST"])
+def student_register():
+    if request.method == "POST":
+        student_number = request.form.get("student_number", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if len(password) < 10:
+            flash("Password must be at least 10 characters.", "error")
+        elif password != confirm_password:
+            flash("Passwords do not match.", "error")
+        else:
+            with db_connection() as conn:
+                student = conn.execute(
+                    """SELECT id, student_number, email FROM students
+                       WHERE student_number = %s AND LOWER(COALESCE(email, '')) = %s""",
+                    (student_number, email)
+                ).fetchone()
+                if not student or not email:
+                    flash("We couldn't match those details to a student record. Contact your administrator.", "error")
+                else:
+                    existing = conn.execute(
+                        "SELECT id FROM student_accounts WHERE student_id = %s", (student["id"],)
+                    ).fetchone()
+                    if existing:
+                        flash("A student account request already exists. Contact your administrator.", "error")
+                    else:
+                        conn.execute(
+                            """INSERT INTO student_accounts (student_id, password_hash, status)
+                               VALUES (%s, %s, 'pending')""",
+                            (student["id"], generate_password_hash(password))
+                        )
+                        flash("Registration submitted. An administrator must approve your account before sign-in.", "success")
+                        return redirect(url_for("student_login"))
+    return render_template("student_register.html")
+
+
+@app.get("/student/portal")
+@student_login_required
+def student_portal():
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM students WHERE id = %s", (session["student_record_id"],)).fetchone()
+    if not row:
+        session.clear()
+        return redirect(url_for("student_login"))
+    return render_template("student_portal.html", student=enrich_student(row))
+
+
+@app.post("/student/logout")
+@student_login_required
+def student_logout():
+    session.clear()
+    return redirect(url_for("student_login"))
+
+
+@app.get("/admin/student-accounts")
+@login_required
+def student_accounts_admin():
+    with db_connection() as conn:
+        accounts = conn.execute(
+            """SELECT sa.id AS account_id, sa.status, sa.created_at,
+                      st.student_number, st.first_name, st.last_name, st.email
+               FROM student_accounts sa JOIN students st ON st.id = sa.student_id
+               ORDER BY CASE WHEN sa.status = 'pending' THEN 0 ELSE 1 END, sa.created_at DESC"""
+        ).fetchall()
+    return render_template("student_accounts.html", accounts=accounts)
+
+
+@app.post("/admin/student-accounts/<int:account_id>/approve")
+@login_required
+def approve_student_account(account_id):
+    with db_connection() as conn:
+        updated = conn.execute(
+            """UPDATE student_accounts SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP,
+                      reviewed_by_admin_id = %s
+               WHERE id = %s AND status = 'pending' RETURNING id""",
+            (session["admin_id"], account_id)
+        ).fetchone()
+        if updated:
+            log_audit_event(conn, "approve_student_account", "student_account", account_id)
+    flash("Student account approved." if updated else "Account was not found or was already reviewed.",
+          "success" if updated else "error")
+    return redirect(url_for("student_accounts_admin"))
+
+
+@app.post("/admin/student-accounts/<int:account_id>/reject")
+@login_required
+def reject_student_account(account_id):
+    with db_connection() as conn:
+        deleted = conn.execute(
+            "DELETE FROM student_accounts WHERE id = %s AND status = 'pending' RETURNING id",
+            (account_id,)
+        ).fetchone()
+        if deleted:
+            log_audit_event(conn, "reject_student_account", "student_account", account_id)
+    flash("Pending account request rejected." if deleted else "Account was not found or was already reviewed.",
+          "success" if deleted else "error")
+    return redirect(url_for("student_accounts_admin"))
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
