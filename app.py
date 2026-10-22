@@ -193,7 +193,7 @@ def log_sign_in(conn, account_type, account_id, account_identifier, account_name
 def style_excel_table(ws, table_name):
     """Apply a real Excel table with filterable headers and alternating rows."""
     if ws.max_row < 2:
-        ws.append(["No records"])
+        ws.append([None] * ws.max_column)
     # Tables require a unique, non-empty header for each column.
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
