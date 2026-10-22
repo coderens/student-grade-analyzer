@@ -71,6 +71,17 @@ class GradePilotValidationTests(unittest.TestCase):
         response = app.test_client().get("/my-activity")
         self.assertEqual(response.status_code, 302)
 
+    def test_excel_sign_in_report_requires_login(self):
+        response = app.test_client().get("/admin/sign-in-report.xlsx")
+        self.assertEqual(response.status_code, 302)
+
+    def test_sign_in_report_schema_has_account_type_and_tracker(self):
+        with open("schema.sql", encoding="utf-8") as schema_file:
+            schema = schema_file.read()
+        self.assertIn("CREATE TABLE IF NOT EXISTS sign_in_logs", schema)
+        self.assertIn("account_type VARCHAR(10)", schema)
+        self.assertIn("tracker_id UUID NOT NULL", schema)
+
 
     def test_tracker_id_migration_is_unique_and_non_null(self):
         with open("schema.sql", encoding="utf-8") as schema_file:
