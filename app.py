@@ -167,20 +167,31 @@ def percentage_to_grade_point(percentage):
     return 5.00
 
 
-def get_student_gwa_summary(student_id):
+def get_student_gwa_summary(student_id, academic_year=None, semester=None):
     """Calculate an interim or completed GWA from subject term records."""
     with db_connection() as conn:
-        rows = conn.execute(
-            """SELECT ss.id AS enrollment_id, ss.academic_year, ss.semester,
-                      sub.id AS subject_id, sub.subject_code, sub.subject_name, sub.units,
-                      gr.term, gr.percentage, gr.updated_at
-               FROM student_subjects ss
-               JOIN subjects sub ON sub.id = ss.subject_id
-               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
-               WHERE ss.student_id = %s
-               ORDER BY ss.academic_year DESC, ss.semester, sub.subject_name, gr.term""",
-            (student_id,)
-        ).fetchall()
+        if not academic_year or not semester:
+            latest = conn.execute(
+                """SELECT academic_year, semester FROM student_subjects
+                   WHERE student_id = %s
+                   ORDER BY academic_year DESC,
+                     CASE semester WHEN '1st Semester' THEN 1 WHEN '2nd Semester' THEN 2 ELSE 3 END DESC
+                   LIMIT 1""", (student_id,)
+            ).fetchone()
+            if latest:
+                academic_year, semester = latest["academic_year"], latest["semester"]
+        if academic_year and semester:
+            rows = conn.execute(
+                """SELECT ss.id AS enrollment_id, ss.academic_year, ss.semester,
+                          sub.id AS subject_id, sub.subject_code, sub.subject_name, sub.units,
+                          gr.term, gr.percentage, gr.updated_at
+                   FROM student_subjects ss JOIN subjects sub ON sub.id = ss.subject_id
+                   LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
+                   WHERE ss.student_id = %s AND ss.academic_year = %s AND ss.semester = %s
+                   ORDER BY sub.subject_name, gr.term""", (student_id, academic_year, semester)
+            ).fetchall()
+        else:
+            rows = []
         policy = conn.execute(
             "SELECT dean_list_gwa_max, max_subject_gwa FROM grading_policies WHERE id = 1"
         ).fetchone()
@@ -217,7 +228,7 @@ def get_student_gwa_summary(student_id):
     dean_status = "Dean's List" if all_complete and gwa is not None and gwa <= dean_gwa_max and no_low_subject else (
         "Pending final grades" if not all_complete and subjects else "Not qualified"
     )
-    return {"subjects": subjects, "gwa": gwa, "graded_subjects": len(graded),
+    return {"subjects": subjects, "gwa": gwa, "academic_year": academic_year, "semester": semester, "graded_subjects": len(graded),
             "total_subjects": len(subjects), "units_total": units_total,
             "all_complete": all_complete, "dean_status": dean_status,
             "dean_gwa_max": dean_gwa_max, "max_subject_gwa": max_subject_gwa}
@@ -1007,7 +1018,7 @@ def enrollment_grades(enrollment_id):
             """SELECT h.*, a.username AS admin_username FROM grade_record_history h
                LEFT JOIN admins a ON a.id = h.actor_admin_id
                WHERE h.student_subject_id = %s ORDER BY h.changed_at DESC LIMIT 100""", (enrollment_id,)).fetchall()
-    summary = get_student_gwa_summary(enrollment["student_id"])
+    summary = get_student_gwa_summary(enrollment["student_id"], enrollment["academic_year"], enrollment["semester"])
     subject_summary = next((s for s in summary["subjects"] if s["enrollment_id"] == enrollment_id), None)
     return render_template("enrollment_grades.html", enrollment=enrollment, records=records,
                            history=history, summary=summary, subject_summary=subject_summary)
