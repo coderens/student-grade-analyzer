@@ -1259,36 +1259,51 @@ def student_detail(student_id):
 @login_required
 def export_csv():
     with db_connection() as conn:
-        log_audit_event(conn, "export_csv", "report", details={"format": "csv"})
-    students = fetch_students()
+        records = conn.execute(
+            """SELECT st.student_number, st.first_name, st.last_name, st.email, st.tracker_id,
+                      sub.subject_code, sub.subject_name, sub.units, ss.academic_year, ss.semester,
+                      gr.term, gr.percentage, gr.updated_at
+               FROM grade_records gr JOIN student_subjects ss ON ss.id = gr.student_subject_id
+               JOIN students st ON st.id = ss.student_id JOIN subjects sub ON sub.id = ss.subject_id
+               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term"""
+        ).fetchall()
+        log_audit_event(conn, "export_csv", "grade_report", details={"format": "csv"})
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Student Number", "First Name", "Last Name", "Email", "Attendance", *SUBJECTS,
-                     "Average", "Letter Grade", "Academic Status", "Performance", "Scholarship", "Warning"])
-    for s in students:
-        writer.writerow([s["student_number"], s["first_name"], s["last_name"], s["email"] or "", s["attendance"],
-                         *[s[sub.lower().replace(" ", "_")] for sub in SUBJECTS], s["average"], s["letter_grade"],
-                         s["status"], s["performance"], s["scholarship"], s["warning"]])
-    return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": "attachment; filename=student_grade_report.csv"})
+    writer.writerow(["Student Number", "Student Name", "Email", "Subject Code", "Subject", "Units",
+                     "Academic Year", "Semester", "Term", "Percentage", "Grade Point", "Updated At", "Tracker ID"])
+    for row in records:
+        writer.writerow([row["student_number"], f'{row["first_name"]} {row["last_name"]}', row["email"] or "",
+                         row["subject_code"], row["subject_name"], float(row["units"]), row["academic_year"],
+                         row["semester"], row["term"], float(row["percentage"]),
+                         percentage_to_grade_point(float(row["percentage"])),
+                         row["updated_at"].isoformat() if row["updated_at"] else "", str(row["tracker_id"])])
+    return Response("\\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=passasado_grade_report.csv"})
 
 
 @app.get("/export/students.pdf")
 @login_required
 def export_pdf():
     with db_connection() as conn:
-        log_audit_event(conn, "export_pdf", "report", details={"format": "pdf"})
-    students = fetch_students()
+        students = conn.execute("SELECT id, student_number, first_name, last_name, attendance FROM students ORDER BY student_number").fetchall()
+        log_audit_event(conn, "export_pdf", "grade_report", details={"format": "pdf"})
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
     styles = getSampleStyleSheet()
-    elements = [Paragraph("Student Grade Management and Performance Analyzer", styles["Title"]),
+    elements = [Paragraph("passASADO or FAILet — Grade Report", styles["Title"]),
                 Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]), Spacer(1, 12)]
-    data = [["Student No.", "Student Name", "Average", "Letter", "Status", "Performance", "Attendance", "Scholarship"]]
-    for s in students:
-        data.append([s["student_number"], f'{s["first_name"]} {s["last_name"]}', f'{s["average"]:.2f}' if s["average"] is not None else "—",
-                     s["letter_grade"], s["status"], s["performance"], f'{s["attendance"]:.1f}%', s["scholarship"]])
-    table = Table(data, repeatRows=1, colWidths=[75, 125, 55, 45, 55, 95, 65, 80])
+    data = [["Student No.", "Student Name", "Average %", "GWA", "Dean's List", "Subjects", "Attendance"]]
+    for student in students:
+        summary = get_student_gwa_summary(student["id"])
+        percentages = [item["subject_percentage"] for item in summary["subjects"] if item["subject_percentage"] is not None]
+        average = round(sum(percentages) / len(percentages), 2) if percentages else None
+        data.append([student["student_number"], f'{student["first_name"]} {student["last_name"]}',
+                     f"{average:.2f}" if average is not None else "—",
+                     f'{summary["gwa"]:.2f}' if summary["gwa"] is not None else "—",
+                     summary["dean_status"], f'{summary["graded_subjects"]}/{summary["total_subjects"]}',
+                     f'{float(student["attendance"]):.1f}%'])
+    table = Table(data, repeatRows=1, colWidths=[80, 135, 65, 55, 120, 60, 65])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f3b63")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -1301,7 +1316,7 @@ def export_pdf():
     doc.build(elements)
     buffer.seek(0)
     return Response(buffer.getvalue(), mimetype="application/pdf",
-                    headers={"Content-Disposition": "attachment; filename=student_grade_report.pdf"})
+                    headers={"Content-Disposition": "attachment; filename=passasado_grade_report.pdf"})
 
 
 @app.get("/admin/sign-in-report.xlsx")
