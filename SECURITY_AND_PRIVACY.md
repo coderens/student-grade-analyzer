@@ -11,6 +11,9 @@ This checklist is an implementation aid, not a certification of compliance with 
 - Restrict exported CSV/PDF reports to authorized staff; exports contain personal data and must be stored/shared securely.
 - Back up the database, test restoration, and define a response plan for suspected incidents.
 
+## Hosting and continuity reminder
+- The currently noted Render PostgreSQL free plan is scheduled to expire on 21 November 2026. Confirm the database's current status and plan, create a verified backup, and test restoration or arrange a suitable plan before that date. Do not assume a backup exists or that production data is present without checking the correct database.
+
 ## School privacy actions required before launch
 1. Identify the personal information controller and publish the actual school and DPO/privacy-contact details.
 2. Document the purpose and lawful basis for each processing activity; do not assume a registration checkbox automatically makes processing lawful.
