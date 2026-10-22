@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, Response, abort, g
 from werkzeug.security import check_password_hash, generate_password_hash
 from psycopg.types.json import Jsonb
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -175,6 +178,41 @@ def log_audit_event(conn, action, entity_type, entity_id=None, details=None, act
            VALUES (%s, %s, %s, %s, %s)""",
         (actor_id, action, entity_type, entity_id, Jsonb(details or {}))
     )
+
+
+def log_sign_in(conn, account_type, account_id, account_identifier, account_name, tracker_id):
+    """Store a successful sign-in without recording passwords or session secrets."""
+    conn.execute(
+        """INSERT INTO sign_in_logs
+           (account_type, account_id, account_identifier, account_name, tracker_id)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (account_type, account_id, account_identifier, account_name, str(tracker_id))
+    )
+
+
+def style_excel_table(ws, table_name):
+    """Apply a real Excel table with filterable headers and alternating rows."""
+    if ws.max_row < 2:
+        ws.append(["No records"])
+    # Tables require a unique, non-empty header for each column.
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F3B63")
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    if ws.max_row >= 2 and ws.max_column >= 1:
+        ref = f"A1:{ws.cell(row=ws.max_row, column=ws.max_column).coordinate}"
+        table = Table(displayName=table_name, ref=ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showFirstColumn=False,
+            showLastColumn=False, showRowStripes=True, showColumnStripes=False
+        )
+        ws.add_table(table)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    ws.sheet_view.showGridLines = False
+    for column_cells in ws.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        ws.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 14), 42)
 
 
 def init_db():
@@ -439,6 +477,8 @@ def login():
             with db_connection() as conn:
                 log_audit_event(conn, "login", "admin", admin["id"],
                                 {"tracker_id": str(admin["tracker_id"])}, actor_admin_id=admin["id"])
+                log_sign_in(conn, "admin", admin["id"], admin["username"],
+                            admin["username"], admin["tracker_id"])
             next_url = request.args.get("next", "")
             return redirect(next_url if is_safe_redirect_target(next_url) else url_for("dashboard"))
         flash("Invalid username or password.", "error")
@@ -672,6 +712,86 @@ def export_pdf():
     buffer.seek(0)
     return Response(buffer.getvalue(), mimetype="application/pdf",
                     headers={"Content-Disposition": "attachment; filename=student_grade_report.pdf"})
+
+
+@app.get("/admin/sign-in-report.xlsx")
+@login_required
+def export_sign_in_report():
+    """Export sign-in events and the current admin/student directory to Excel."""
+    workbook = Workbook()
+    logs_sheet = workbook.active
+    logs_sheet.title = "Sign-in Logs"
+    logs_sheet.append([
+        "Sign-in ID", "Account Type", "Account Identifier", "Account Name",
+        "Unique Tracker ID", "Sign-in Date and Time", "Status"
+    ])
+    directory_sheet = workbook.create_sheet("Account Directory")
+    directory_sheet.append([
+        "Account Type", "Account Identifier", "Account Name",
+        "Unique Tracker ID", "Account Created At", "Sign-in Count"
+    ])
+
+    with db_connection() as conn:
+        sign_ins = conn.execute(
+            """SELECT id, account_type, account_identifier, account_name,
+                      tracker_id, signed_in_at
+               FROM sign_in_logs
+               ORDER BY signed_in_at DESC, id DESC"""
+        ).fetchall()
+        admins = conn.execute(
+            """SELECT a.id, a.username, a.tracker_id, a.created_at,
+                      COUNT(s.id) AS sign_in_count
+               FROM admins a LEFT JOIN sign_in_logs s
+                 ON s.account_type = 'admin' AND s.account_id = a.id
+               GROUP BY a.id ORDER BY a.username"""
+        ).fetchall()
+        students = conn.execute(
+            """SELECT st.id, st.student_number, st.first_name, st.last_name,
+                      st.tracker_id, st.created_at,
+                      COUNT(s.id) AS sign_in_count
+               FROM students st LEFT JOIN sign_in_logs s
+                 ON s.account_type = 'student' AND s.account_id = st.id
+               GROUP BY st.id ORDER BY st.last_name, st.first_name"""
+        ).fetchall()
+
+    for row in sign_ins:
+        logs_sheet.append([
+            row["id"], row["account_type"].title(), row["account_identifier"],
+            row["account_name"], str(row["tracker_id"]),
+            row["signed_in_at"].replace(tzinfo=None) if row["signed_in_at"] else None,
+            "Successful"
+        ])
+    for row in admins:
+        directory_sheet.append([
+            "Admin", row["username"], row["username"], str(row["tracker_id"]),
+            row["created_at"].replace(tzinfo=None) if row["created_at"] else None,
+            row["sign_in_count"]
+        ])
+    for row in students:
+        directory_sheet.append([
+            "Student", row["student_number"], f'{row["first_name"]} {row["last_name"]}',
+            str(row["tracker_id"]),
+            row["created_at"].replace(tzinfo=None) if row["created_at"] else None,
+            row["sign_in_count"]
+        ])
+
+    style_excel_table(logs_sheet, "SignInLogTable")
+    style_excel_table(directory_sheet, "AccountDirectoryTable")
+    for ws in (logs_sheet, directory_sheet):
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                if cell.is_date:
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    with db_connection() as conn:
+        log_audit_event(conn, "export_sign_in_report", "report", details={"format": "xlsx"})
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=gradepilot_sign_in_report.xlsx"}
+    )
 
 
 @app.errorhandler(404)
