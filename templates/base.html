@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}passASADO or FAILet{% endblock %} | Student Grade Analyzer</title>
+  <title>{% block title %}passASADO or FAILet{% endblock %} | passASADO or FAILet</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   {% block head %}{% endblock %}
 </head>
 <body>
 {% if session.get('admin_id') %}
 <aside class="sidebar">
-  <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-icon">G</span><span>passASADO or FAILet<small>ACADEMIC ANALYTICS</small></span></a>
+  <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-icon">P</span><span>passASADO or FAILet<small>ACADEMIC ANALYTICS</small></span></a>
   <div class="nav-label">WORKSPACE</div>
   <a class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">▦ &nbsp; Dashboard</a>
   <a class="nav-link {% if request.endpoint in ['students_page','add_student','edit_student','student_detail'] %}active{% endif %}" href="{{ url_for('students_page') }}">♙ &nbsp; Students</a>
