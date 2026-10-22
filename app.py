@@ -168,6 +168,32 @@ def create_admin_command():
     print("Administrator created successfully.")
 
 
+@app.cli.command("reset-admin-password")
+def reset_admin_password_command():
+    """Reset an existing administrator's password securely from the terminal."""
+    import getpass
+    username = input("Admin username to reset: ").strip()
+    password = getpass.getpass("New admin password (minimum 10 characters): ")
+    confirmation = getpass.getpass("Confirm new password: ")
+    if not username or len(password) < 10:
+        raise SystemExit("Username is required and password must be at least 10 characters.")
+    if password != confirmation:
+        raise SystemExit("Passwords do not match.")
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE admins SET password_hash = %s WHERE username = %s RETURNING id",
+            (generate_password_hash(password), username)
+        ).fetchone()
+        if not result:
+            raise SystemExit("No administrator with that username was found.")
+    print("Administrator password reset successfully.")
+
+
+@app.get("/forgot-password")
+def forgot_password():
+    return render_template("forgot_password.html")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
