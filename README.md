@@ -1,13 +1,14 @@
-# Student Grade Management and Performance Analyzer
+# passASADO or FAILet
 
 A local, rule-based Flask + PostgreSQL web application. It does **not** use AI, machine learning, AI APIs, or AI services. Grade and status decisions are made by the explicit Python functions in `app.py`.
 
 ## Features
 - Admin sign-in with Werkzeug password hashing and server-side session authentication
-- Student CRUD: create, view, edit, delete, and search
-- Five equally weighted subjects: Programming, Database, Mathematics, Networking, Web Development
+- Student profiles and subject-specific enrollment lists
+- Create subjects, enroll students, and record editable Midterms and Finals grades per subject
 - Dashboard cards and Chart.js pass/fail and subject-average charts
-- CSV and PDF exports
+- Grade history with edit/delete audit trail; GWA and estimated Dean's List status
+- CSV and Excel import, plus Excel/CSV/PDF report exports
 - PostgreSQL constraints for grade and attendance ranges
 
 ## Requirements
@@ -84,6 +85,18 @@ Stop the local server with `Ctrl+C` in the terminal.
 
 The overall average is the arithmetic mean of the five subject grades. No subject weighting was provided, so all five are equally weighted.
 
+
+## Subject-based grading, GWA, and reports
+
+1. Create a student profile from **Students** (profile details only).
+2. Open **Subjects**, create the subject code/name/units, then open it and enroll students for an academic year and semester.
+3. From the subject roster, open **Manage grades** and enter a percentage for **Midterms** or **Finals**. Saving a term again edits its current grade and records the previous/new value in grade history. Deleting a grade also leaves a history entry.
+4. GWA uses the unit-weighted average of grade points for the latest academic year/semester with records. If only midterms are entered, the displayed GWA is interim; Dean's List eligibility stays pending until both midterms and finals exist for every enrolled subject.
+5. The current sample percentage conversion is: 97–100 = 1.00; 94–96 = 1.25; 91–93 = 1.50; 88–90 = 1.75; 85–87 = 2.00; 82–84 = 2.25; 79–81 = 2.50; 76–78 = 2.75; 75 = 3.00; below 75 = 5.00. Midterms and finals are equally weighted in the current subject percentage.
+6. The sample Dean's List defaults are GWA ≤ 1.75 and no subject grade point worse than 2.50. Administrators can edit these thresholds from **Subjects**. Confirm your institution's official conversion, weights, and eligibility requirements before using the status as an official decision.
+7. **Import grade file** accepts CSV or XLSX with the headers Student Number, Subject Code, Academic Year, Semester, Term, and Percentage. Use the downloadable CSV template. The importer validates rows, reports skipped entries, creates missing enrollments for valid student/subject pairs, and records changes in history.
+8. **Export grade report** creates an Excel workbook with current grade records and a GWA summary. Existing CSV/PDF student exports and the separate sign-in Excel report remain available.
+
 ## Database
 `schema.sql` creates the `admins` and `students` tables and enforces 0–100 constraints for attendance and grades. The database must be created separately first. `flask --app app init-db` can be run again safely to ensure tables exist.
 
@@ -94,5 +107,36 @@ The overall average is the arithmetic mean of the five subject grades. No subjec
 - **Chart blank:** check internet access for the Chart.js CDN; grade calculations and exports are handled locally.
 - **500 error:** check the VS Code terminal for the underlying error. Do not use Flask debug mode on a public server.
 
-## Security notes
-This package is intended for local development. Before exposing it to a network, set a strong secret key, disable debug mode, configure HTTPS and secure cookies, add CSRF protection, and review deployment security. Keep `.env` private. The built-in development server is not intended for production deployment.
+## Security and deployment notes
+
+- Set a long, random `SECRET_KEY` in Render's environment variables. Production startup intentionally fails if it is missing. Never commit or share this value.
+- Keep `FLASK_DEBUG=false` in production. Use Gunicorn or the platform's production server, not Flask's development server.
+- Use HTTPS and keep `.env` private. Rotate any database password or API token that has been exposed.
+- Forms use CSRF tokens. Admin sessions use HTTP-only cookies and are revoked when an administrator password is changed.
+- Student create, edit, and delete operations are recorded in the `audit_logs` table. Audit records contain action metadata rather than student grade values.
+- Grade and attendance inputs are validated on the server and constrained in PostgreSQL.
+- Password recovery requires an already registered email or phone and a configured SMTP or Twilio sender. Verification codes expire after 10 minutes and allow up to five attempts.
+- Automated regression tests run through GitHub Actions. Passing tests do not replace a deployment review, database backup plan, or manual security testing.
+
+### Recovery administration
+
+Use these Flask CLI commands from a trusted terminal with `DATABASE_URL` pointing to the intended database:
+
+```powershell
+py -m flask --app app set-admin-recovery-contact
+py -m flask --app app reset-admin-password
+```
+
+These commands prompt for account details and passwords. Do not paste database credentials or recovery codes into chat or commit them to the repository.
+
+The database schema is applied by `flask --app app init-db` and the configured Render startup command. The `session_version` migration and audit table are additive and do not delete student records.
+
+
+## Account tracking and Excel sign-in report
+- Every administrator and student record receives a unique tracker ID.
+- Successful administrator sign-ins and approved student sign-ins are recorded without storing passwords or session secrets.
+- Students use the separate **Student sign in** and **Request access** pages. Registration must match an existing student number and school-record email, and stays pending until an administrator approves it from **Student Account Approvals**.
+- Administrators should independently verify a student's identity before approving; matching the stored email is not email verification.
+- Students can view only their own grade record after approval. Admin and student sessions use separate session keys.
+- Administrators can download **Sign-in Excel Report** from the sidebar. The workbook includes filterable Excel tables with header rows on the **Sign-in Logs** and **Account Directory** sheets.
+- The directory lists admin accounts and student records, including tracker IDs and sign-in counts. The report is restricted to authenticated administrators.
