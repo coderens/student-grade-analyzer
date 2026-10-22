@@ -21,3 +21,12 @@ CREATE TABLE IF NOT EXISTS students (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS students_name_idx ON students (last_name, first_name);
+
+CREATE TABLE IF NOT EXISTS student_accounts (
+    id BIGSERIAL PRIMARY KEY,
+    student_id BIGINT NOT NULL UNIQUE REFERENCES students(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS student_accounts_email_idx ON student_accounts (LOWER(email));
