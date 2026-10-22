@@ -903,6 +903,27 @@ def subjects_page():
 
 
 
+@app.post("/subjects/<int:subject_id>/delete")
+@login_required
+def delete_subject(subject_id):
+    # Archive instead of physically deleting so enrollments, grades, and history remain intact.
+    with db_connection() as conn:
+        subject = conn.execute(
+            "SELECT id, subject_name, is_active FROM subjects WHERE id = %s", (subject_id,)
+        ).fetchone()
+        if not subject:
+            flash("Subject not found.", "error")
+            return redirect(url_for("subjects_page"))
+        if not subject["is_active"]:
+            flash("This subject is already deleted.", "error")
+            return redirect(url_for("subjects_page"))
+        conn.execute("UPDATE subjects SET is_active = FALSE WHERE id = %s", (subject_id,))
+        log_audit_event(conn, "archive", "subject", subject_id,
+                        {"subject_name": subject["subject_name"], "preserved_grade_history": True})
+    flash("Subject deleted from the active catalog. Existing grades and history have been preserved.", "success")
+    return redirect(url_for("subjects_page"))
+
+
 @app.post("/admin/grading-policy")
 @login_required
 def update_grading_policy():
@@ -934,7 +955,7 @@ def validate_grade_point(value):
 @login_required
 def subject_detail(subject_id):
     with db_connection() as conn:
-        subject = conn.execute("SELECT * FROM subjects WHERE id = %s AND is_active = TRUE", (subject_id,)).fetchone()
+        subject = conn.execute("SELECT * FROM subjects WHERE id = %s", (subject_id,)).fetchone()
         students = conn.execute(
             """SELECT ss.id AS enrollment_id, ss.academic_year, ss.semester,
                       st.id AS student_id, st.student_number, st.first_name, st.last_name,
@@ -1182,11 +1203,25 @@ def students_page():
 @app.route("/students/add", methods=["GET", "POST"])
 @login_required
 def add_student():
+    # When launched from a subject page, create the profile and enroll it in that subject.
+    subject_id = request.args.get("subject_id", type=int)
+    academic_year = (request.args.get("academic_year") or "2026-2027").strip()
+    semester = (request.args.get("semester") or "1st Semester").strip()
+    if subject_id:
+        with db_connection() as conn:
+            subject = conn.execute(
+                "SELECT id, subject_name FROM subjects WHERE id = %s AND is_active = TRUE",
+                (subject_id,)
+            ).fetchone()
+        if not subject:
+            flash("That subject is no longer available.", "error")
+            return redirect(url_for("subjects_page"))
     if request.method == "POST":
         data, errors = validate_student_profile_form(request.form)
         if errors:
             for error in errors: flash(error, "error")
-            return render_template("student_form.html", student=data, subjects=[], page_title="Add student")
+            return render_template("student_form.html", student=data, subjects=[],
+                                   page_title="Add student", subject=subject if subject_id else None)
         try:
             with db_connection() as conn:
                 inserted = conn.execute(
@@ -1195,12 +1230,26 @@ def add_student():
                        VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s, 0, 0, 0, 0, 0)
                        RETURNING id""", data).fetchone()
                 log_audit_event(conn, "create", "student", inserted["id"], {"changed_fields": ["student_record_created"]})
-            flash("Student added. Enroll them in subjects to start recording grades.", "success")
+                if subject_id:
+                    enrollment = conn.execute(
+                        """INSERT INTO student_subjects (student_id, subject_id, academic_year, semester)
+                           VALUES (%s, %s, %s, %s) RETURNING id""",
+                        (inserted["id"], subject_id, academic_year, semester)
+                    ).fetchone()
+                    log_audit_event(conn, "enroll", "student_subject", enrollment["id"],
+                                    {"student_id": inserted["id"], "subject_id": subject_id,
+                                     "academic_year": academic_year, "semester": semester})
+            if subject_id:
+                flash("Student added and enrolled in the subject. You can now enter Midterm and Final grades.", "success")
+                return redirect(url_for("subject_detail", subject_id=subject_id))
+            flash("Student added. Open a subject and use + Add Student to enroll them.", "success")
             return redirect(url_for("students_page"))
         except psycopg.errors.UniqueViolation:
             flash("Student number already exists. Use a unique student number.", "error")
-        return render_template("student_form.html", student=data, subjects=[], page_title="Add student")
-    return render_template("student_form.html", student={}, subjects=[], page_title="Add student")
+        return render_template("student_form.html", student=data, subjects=[], page_title="Add student",
+                               subject=subject if subject_id else None)
+    return render_template("student_form.html", student={}, subjects=[], page_title="Add student",
+                           subject=subject if subject_id else None)
 
 
 @app.route("/students/<int:student_id>/edit", methods=["GET", "POST"])
