@@ -638,7 +638,13 @@ def manage_student_accounts():
                FROM student_accounts sa JOIN students s ON s.id = sa.student_id
                WHERE sa.is_active = FALSE ORDER BY sa.created_at"""
         ).fetchall()
-    return render_template("admin_student_accounts.html", pending_accounts=pending_accounts)
+        active_accounts = conn.execute(
+            """SELECT sa.id, sa.email, sa.created_at, s.student_number, s.first_name, s.last_name
+               FROM student_accounts sa JOIN students s ON s.id = sa.student_id
+               WHERE sa.is_active = TRUE ORDER BY s.last_name, s.first_name"""
+        ).fetchall()
+    return render_template("admin_student_accounts.html", pending_accounts=pending_accounts,
+                           active_accounts=active_accounts)
 
 
 @app.post("/admin/student-accounts/<int:account_id>/approve")
