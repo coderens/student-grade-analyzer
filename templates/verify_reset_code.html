@@ -1,0 +1,14 @@
+{% extends 'base.html' %}{% block title %}Verify code{% endblock %}
+{% block content %}
+<div class="login-panel">
+  <form class="login-card" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="eyebrow">ACCOUNT RECOVERY</div>
+    <h2>Verify your code</h2>
+    <p class="muted">Enter the verification code sent to your registered recovery contact. The code expires after 10 minutes.</p>
+    <label>Verification code<input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="one-time-code"></label>
+    <button class="btn primary full" type="submit">Verify code</button>
+    <a class="btn full" href="{{ url_for('forgot_password') }}">Start again</a>
+  </form>
+</div>
+{% endblock %}
