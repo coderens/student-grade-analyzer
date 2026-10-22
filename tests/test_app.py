@@ -94,5 +94,19 @@ class GradePilotValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
 
 
+    def test_student_auth_routes_are_separate_and_protected(self):
+        client = app.test_client()
+        self.assertEqual(client.get("/student/portal").status_code, 302)
+        self.assertEqual(client.get("/admin/student-accounts").status_code, 302)
+        self.assertEqual(client.get("/student/login").status_code, 200)
+        self.assertEqual(client.get("/student/register").status_code, 200)
+
+    def test_student_accounts_schema_requires_approval(self):
+        with open("schema.sql", encoding="utf-8") as schema_file:
+            schema = schema_file.read()
+        self.assertIn("CREATE TABLE IF NOT EXISTS student_accounts", schema)
+        self.assertIn("DEFAULT 'pending'", schema)
+        self.assertIn("CHECK (status IN ('pending', 'approved'))", schema)
+
 if __name__ == "__main__":
     unittest.main()
