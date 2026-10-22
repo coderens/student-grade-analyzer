@@ -189,9 +189,191 @@ def reset_admin_password_command():
     print("Administrator password reset successfully.")
 
 
-@app.get("/forgot-password")
+
+def send_recovery_code(method, destination, code):
+    """Send a one-time code using environment-configured SMTP or Twilio."""
+    if method == "email":
+        import smtplib
+        from email.message import EmailMessage
+
+        host = os.getenv("SMTP_HOST")
+        username = os.getenv("SMTP_USERNAME")
+        password = os.getenv("SMTP_PASSWORD")
+        sender = os.getenv("SMTP_FROM") or username
+        if not all([host, username, password, sender]):
+            return False
+        message = EmailMessage()
+        message["Subject"] = "GradePilot password recovery code"
+        message["From"] = sender
+        message["To"] = destination
+        message.set_content(
+            f"Your GradePilot password recovery code is {code}. "
+            "It expires in 10 minutes. If you did not request this, ignore this email."
+        )
+        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
+            server.starttls()
+            server.login(username, password)
+            server.send_message(message)
+        return True
+
+    import base64
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+
+    sid = os.getenv("TWILIO_ACCOUNT_SID")
+    token = os.getenv("TWILIO_AUTH_TOKEN")
+    sender = os.getenv("TWILIO_FROM_NUMBER")
+    if not all([sid, token, sender]):
+        return False
+    payload = urlencode({
+        "To": destination,
+        "From": sender,
+        "Body": f"Your GradePilot password recovery code is {code}. It expires in 10 minutes."
+    }).encode()
+    credentials = base64.b64encode(f"{sid}:{token}".encode()).decode()
+    req = Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+        data=payload,
+        headers={"Authorization": f"Basic {credentials}",
+                 "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST"
+    )
+    with urlopen(req, timeout=15) as response:
+        return 200 <= response.status < 300
+
+
+@app.cli.command("set-admin-recovery-contact")
+def set_admin_recovery_contact_command():
+    """Set the recovery email and/or phone for an administrator."""
+    username = input("Admin username: ").strip()
+    email = input("Recovery email (leave blank to skip): ").strip() or None
+    phone = input("Recovery phone in international format (leave blank to skip): ").strip() or None
+    if not username or not (email or phone):
+        raise SystemExit("Enter a username and at least one recovery contact.")
+    if email and ("@" not in email or "." not in email.rsplit("@", 1)[-1]):
+        raise SystemExit("Enter a valid email address.")
+    if phone and not phone.startswith("+"):
+        raise SystemExit("Enter the phone number in international format, e.g. +639XXXXXXXXX.")
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE admins SET recovery_email = %s, recovery_phone = %s WHERE username = %s RETURNING id",
+            (email, phone, username)
+        ).fetchone()
+        if not result:
+            raise SystemExit("No administrator with that username was found.")
+    print("Recovery contact saved.")
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        method = request.form.get("method", "")
+        if method not in ("email", "sms"):
+            flash("Choose a valid recovery method.", "error")
+            return render_template("forgot_password.html")
+        column = "recovery_email" if method == "email" else "recovery_phone"
+        destination = None
+        admin = None
+        with db_connection() as conn:
+            admin = conn.execute(
+                f"SELECT id, {column} AS destination FROM admins WHERE username = %s",
+                (username,)
+            ).fetchone()
+            if admin:
+                destination = admin["destination"]
+            if destination:
+                code = f"{secrets.randbelow(1000000):06d}"
+                conn.execute(
+                    "UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP "
+                    "WHERE admin_id = %s AND used_at IS NULL",
+                    (admin["id"],)
+                )
+                reset_row = conn.execute(
+                    """INSERT INTO password_reset_codes (admin_id, code_hash, method, expires_at)
+                       VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')
+                       RETURNING id""",
+                    (admin["id"], generate_password_hash(code), method)
+                ).fetchone()
+                try:
+                    sent = send_recovery_code(method, destination, code)
+                except Exception:
+                    app.logger.exception("Password recovery delivery failed")
+                    sent = False
+                if not sent:
+                    conn.execute("UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = %s",
+                                 (reset_row["id"],))
+        if admin and destination and sent:
+            session["password_reset_id"] = reset_row["id"]
+            session["password_reset_stage"] = "verify"
+            flash("If the account and recovery contact are valid, a verification code has been sent.", "success")
+            return redirect(url_for("verify_password_reset"))
+        flash("We couldn't send a code to that recovery contact. Check the registered contact or contact the system administrator.", "error")
     return render_template("forgot_password.html")
+
+
+@app.route("/verify-reset-code", methods=["GET", "POST"])
+def verify_password_reset():
+    reset_id = session.get("password_reset_id")
+    if not reset_id or session.get("password_reset_stage") != "verify":
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        code = request.form.get("code", "").strip()
+        with db_connection() as conn:
+            reset_row = conn.execute(
+                """SELECT id, code_hash, expires_at, attempts, verified_at, used_at
+                   FROM password_reset_codes WHERE id = %s""",
+                (reset_id,)
+            ).fetchone()
+            if not reset_row or reset_row["used_at"] or reset_row["verified_at"] or reset_row["expires_at"] <= datetime.now(reset_row["expires_at"].tzinfo) or reset_row["attempts"] >= 5:
+                flash("The code is invalid or expired. Start the recovery process again.", "error")
+                session.pop("password_reset_id", None)
+                session.pop("password_reset_stage", None)
+                return redirect(url_for("forgot_password"))
+            if not check_password_hash(reset_row["code_hash"], code):
+                conn.execute("UPDATE password_reset_codes SET attempts = attempts + 1 WHERE id = %s", (reset_id,))
+                flash("Invalid verification code.", "error")
+                return render_template("verify_reset_code.html")
+            conn.execute("UPDATE password_reset_codes SET verified_at = CURRENT_TIMESTAMP WHERE id = %s", (reset_id,))
+        session["password_reset_stage"] = "reset"
+        return redirect(url_for("reset_password"))
+    return render_template("verify_reset_code.html")
+
+
+@app.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    reset_id = session.get("password_reset_id")
+    if not reset_id or session.get("password_reset_stage") != "reset":
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirmation = request.form.get("confirmation", "")
+        if len(password) < 10:
+            flash("Password must be at least 10 characters.", "error")
+            return render_template("reset_password.html")
+        if password != confirmation:
+            flash("Passwords do not match.", "error")
+            return render_template("reset_password.html")
+        with db_connection() as conn:
+            reset_row = conn.execute(
+                """SELECT admin_id FROM password_reset_codes
+                   WHERE id = %s AND verified_at IS NOT NULL AND used_at IS NULL
+                     AND expires_at > CURRENT_TIMESTAMP""",
+                (reset_id,)
+            ).fetchone()
+            if not reset_row:
+                session.pop("password_reset_id", None)
+                session.pop("password_reset_stage", None)
+                flash("The recovery session expired. Start again.", "error")
+                return redirect(url_for("forgot_password"))
+            conn.execute("UPDATE admins SET password_hash = %s WHERE id = %s",
+                         (generate_password_hash(password), reset_row["admin_id"]))
+            conn.execute("UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = %s", (reset_id,))
+        session.pop("password_reset_id", None)
+        session.pop("password_reset_stage", None)
+        flash("Password changed successfully. Please sign in.", "success")
+        return redirect(url_for("login"))
+    return render_template("reset_password.html")
 
 
 @app.route("/login", methods=["GET", "POST"])
