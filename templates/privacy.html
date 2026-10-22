@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% block title %}Privacy Notice{% endblock %}{% block page_heading %}Privacy Notice{% endblock %}
+{% block content %}
+<div class="welcome-row"><div><div class="eyebrow">GRADE PILOT · VERSION {{ privacy_notice_version }}</div><h2>Privacy Notice</h2><p class="muted">This notice must be reviewed and completed by the school before production use.</p></div></div>
+<div class="panel form-panel privacy-notice-content">
+<h3>1. Personal information processed</h3>
+<p>GradePilot may process student number, name, school-record email address, grades, attendance, academic status, and student-account credentials. Passwords are stored as password hashes, not as readable passwords.</p>
+<h3>2. Purposes</h3>
+<p>The system uses this information to maintain student records, calculate academic summaries, provide students access to their own academic records, and produce authorized school reports. Do not enter unrelated sensitive personal information.</p>
+<h3>3. School responsibility and lawful basis</h3>
+<p><strong>School to complete before launch:</strong> identify the personal information controller, its contact details, the Data Protection Officer or privacy contact, and the lawful basis for each processing purpose under applicable Philippine law. A checkbox acknowledging this notice is not, by itself, a determination that consent is the correct lawful basis.</p>
+<h3>4. Access and disclosures</h3>
+<p>Authorized school administrators can manage student records and generate reports. A signed-in student should only be able to view the record linked to that student account. The school must identify any other authorized recipients and document when disclosure is permitted.</p>
+<h3>5. Hosting, security, and retention</h3>
+<p>The application is hosted using Render and PostgreSQL. The school must verify the hosting region, applicable provider terms, any cross-border processing, backup arrangements, and retention period before launch. Student records and exported reports must be retained only as long as justified by the school's documented purpose and legal obligations, then securely deleted or anonymized.</p>
+<h3>6. Your privacy rights</h3>
+<p>Subject to applicable law and exceptions, students or their authorized representatives may request access to, correction of, or information about the processing of their personal data, and may raise concerns through the school's designated privacy contact. The school must publish the actual contact details and a process for handling requests.</p>
+<h3>7. Questions or complaints</h3>
+<p><strong>School privacy contact:</strong> [Insert official email or office before production use]. You may also consult the Philippine National Privacy Commission through its official website at <a href="https://privacy.gov.ph/" target="_blank" rel="noopener noreferrer">privacy.gov.ph</a>.</p>
+<h3>8. Notice acknowledgement</h3>
+<p>When registering, the student confirms that they have read this notice. This acknowledgement records notice version {{ privacy_notice_version }} and is separate from the school's responsibility to determine and document the lawful basis for processing.</p>
+<p class="muted">Last reviewed: 22 October 2026. This template is not legal advice and must be adapted to the school's actual practices before production use.</p>
+</div>
+{% endblock %}
