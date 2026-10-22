@@ -225,9 +225,9 @@ def get_student_gwa_summary(student_id, academic_year=None, semester=None):
     max_subject_gwa = float(policy["max_subject_gwa"]) if policy else 2.50
     dean_gwa_max = float(policy["dean_list_gwa_max"]) if policy else 1.75
     no_low_subject = bool(graded) and all(item["grade_point"] <= max_subject_gwa for item in graded)
-    dean_status = "Dean's List" if all_complete and gwa is not None and gwa <= dean_gwa_max and no_low_subject else (
-        "Pending final grades" if not all_complete and subjects else "Not qualified"
-    )
+    dean_status = ("No subjects enrolled" if not subjects else
+                   "Dean's List" if all_complete and gwa is not None and gwa <= dean_gwa_max and no_low_subject else
+                   "Pending final grades" if not all_complete else "Not qualified")
     return {"subjects": subjects, "gwa": gwa, "academic_year": academic_year, "semester": semester, "graded_subjects": len(graded),
             "total_subjects": len(subjects), "units_total": units_total,
             "all_complete": all_complete, "dean_status": dean_status,
