@@ -115,16 +115,28 @@ def get_subject_remark(grade):
 
 def enrich_student(student):
     student = dict(student)
-    grades = [float(student[s.lower().replace(' ', '_')]) for s in SUBJECTS]
-    average = round(sum(grades) / len(grades), 2)
-    attendance = float(student["attendance"])
-    student["average"] = average
-    student["letter_grade"] = get_letter_grade(average)
-    student["status"] = get_status(average, attendance)
-    student["performance"] = get_performance(average)
-    student["scholarship"] = get_scholarship(average, attendance)
-    student["warning"] = get_warning(average, attendance)
-    student["subject_remarks"] = {s: get_subject_remark(grades[i]) for i, s in enumerate(SUBJECTS)}
+    summary = get_student_gwa_summary(student["id"])
+    graded = [item for item in summary["subjects"] if item["subject_percentage"] is not None]
+    if graded:
+        average = round(sum(item["subject_percentage"] for item in graded) / len(graded), 2)
+        student["average"] = average
+        student["letter_grade"] = get_letter_grade(average)
+        student["status"] = get_status(average, float(student["attendance"]))
+        student["performance"] = get_performance(average)
+        student["scholarship"] = get_scholarship(average, float(student["attendance"]))
+        student["warning"] = get_warning(average, float(student["attendance"]))
+        student["subject_remarks"] = {item["subject_name"]: get_subject_remark(item["subject_percentage"]) for item in graded}
+    else:
+        student["average"] = None
+        student["letter_grade"] = "—"
+        student["status"] = "NO GRADES"
+        student["performance"] = "Awaiting grades"
+        student["scholarship"] = "Not evaluated"
+        student["warning"] = "No subject grades entered"
+        student["subject_remarks"] = {}
+    student["gwa"] = summary["gwa"]
+    student["dean_status"] = summary["dean_status"]
+    student["grade_summary"] = summary
     return student
 
 
