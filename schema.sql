@@ -5,12 +5,17 @@ CREATE TABLE IF NOT EXISTS admins (
     recovery_email VARCHAR(255),
     recovery_phone VARCHAR(30),
     session_version INTEGER NOT NULL DEFAULT 1,
+    tracker_id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 ALTER TABLE admins ADD COLUMN IF NOT EXISTS recovery_email VARCHAR(255);
 ALTER TABLE admins ADD COLUMN IF NOT EXISTS recovery_phone VARCHAR(30);
 ALTER TABLE admins ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS tracker_id UUID DEFAULT gen_random_uuid();
+UPDATE admins SET tracker_id = gen_random_uuid() WHERE tracker_id IS NULL;
+ALTER TABLE admins ALTER COLUMN tracker_id SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS admins_tracker_id_idx ON admins (tracker_id);
 
 CREATE TABLE IF NOT EXISTS password_reset_codes (
     id BIGSERIAL PRIMARY KEY,
