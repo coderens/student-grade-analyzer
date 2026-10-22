@@ -374,11 +374,11 @@ def send_recovery_code(method, destination, code):
         if not all([host, username, password, sender]):
             return False
         message = EmailMessage()
-        message["Subject"] = "GradePilot password recovery code"
+        message["Subject"] = "passASADO or FAILet password recovery code"
         message["From"] = sender
         message["To"] = destination
         message.set_content(
-            f"Your GradePilot password recovery code is {code}. "
+            f"Your passASADO or FAILet password recovery code is {code}. "
             "It expires in 10 minutes. If you did not request this, ignore this email."
         )
         with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
@@ -399,7 +399,7 @@ def send_recovery_code(method, destination, code):
     payload = urlencode({
         "To": destination,
         "From": sender,
-        "Body": f"Your GradePilot password recovery code is {code}. It expires in 10 minutes."
+        "Body": f"Your passASADO or FAILet password recovery code is {code}. It expires in 10 minutes."
     }).encode()
     credentials = base64.b64encode(f"{sid}:{token}".encode()).decode()
     req = Request(
