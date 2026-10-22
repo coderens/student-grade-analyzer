@@ -66,6 +66,9 @@ class GradePilotValidationTests(unittest.TestCase):
             schema = schema_file.read()
         self.assertIn("tracker_id UUID", schema)
         self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS admins_tracker_id_idx", schema)
+        self.assertIn("owner_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL", schema)
+        self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS students_owner_number_idx", schema)
+        self.assertIn("owner_admin_id IS NULL", schema)
 
     def test_personal_activity_route_requires_login(self):
         response = app.test_client().get("/my-activity")
