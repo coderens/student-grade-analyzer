@@ -496,7 +496,7 @@ def not_found(_error):
 
 @app.errorhandler(500)
 def server_error(_error):
-    return render_template("error.html", code=500, message="An unexpected error occurred. Check the terminal for details."), 500
+    return render_template("error.html", code=500, message="An unexpected error occurred. Please try again or contact the system administrator."), 500
 
 
 
