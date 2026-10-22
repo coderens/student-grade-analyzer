@@ -2,7 +2,7 @@
 {% block content %}
 <div class="welcome-row"><div><h2>{{ subject.subject_name }} <span class="grade-chip">{{ subject.subject_code }}</span></h2><p class="muted">{{ '%.1f'|format(subject.units) }} units · {{ subject.description or 'Manage enrollments and term grades for this subject.' }}</p></div><a class="btn secondary" href="{{ url_for('subjects_page') }}">← All subjects</a></div>
 <div class="panel form-panel"><div class="panel-heading"><div><h3>Add a student to this subject</h3><p class="muted">Create a new student profile, then automatically enroll them in this subject.</p></div></div><div class="form-actions">{% if subject.is_active %}<a class="btn primary" href="{{ url_for('add_student', subject_id=subject.id, academic_year='2026-2027', semester='1st Semester') }}">＋ Add Student</a>{% endif %}</div></div>
-{% if subject.is_active %}<div class="panel form-panel"><div class="panel-heading"><div><h3>Enroll an existing student</h3><p class="muted">Start typing a student name or student number, then click a recommendation to enroll them in this subject.</p></div></div><form id="enroll-existing-student-form" method="post" action="{{ url_for('enroll_student', subject_id=subject.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><div class="form-grid"><label>Find student<input id="student-suggestion-input" name="student_number" required maxlength="40" autocomplete="off" placeholder="Type a name or student number" aria-describedby="student-suggestion-help"><small id="student-suggestion-help" class="table-subtext">Type at least 2 characters to see matching students.</small><div id="student-suggestions" class="student-suggestions" role="listbox" aria-label="Student recommendations" hidden></div></label><label>Academic year<input id="enroll-academic-year" name="academic_year" required maxlength="20" value="2026-2027" placeholder="2026-2027"></label><label>Semester<select id="enroll-semester" name="semester" required><option value="1st Semester">1st Semester</option><option value="2nd Semester">2nd Semester</option><option value="Summer">Summer</option></select></label></div><div class="form-actions"><button class="btn secondary" type="submit">Enroll Student</button></div></form></div>
+{% if subject.is_active %}<div class="panel form-panel"><div class="panel-heading"><div><h3>Enroll an existing student</h3><p class="muted">Start typing a student name or student number, then click a recommendation to enroll them in this subject.</p></div></div><form id="enroll-existing-student-form" method="post" action="{{ url_for('enroll_student', subject_id=subject.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input id="selected-student-number" type="hidden" name="student_number" value=""><div class="form-grid"><label>Find student<input id="student-suggestion-input" type="text" required maxlength="120" autocomplete="off" placeholder="Search by name, Gmail, or student number" aria-describedby="student-suggestion-help"><small id="student-suggestion-help" class="table-subtext">Type at least 2 characters, then select a student from the recommendations.</small><div id="student-suggestions" class="student-suggestions" role="listbox" aria-label="Student recommendations" hidden></div><small id="selected-student-status" class="selected-student-status" aria-live="polite">No student selected.</small></label><label>Academic year<input id="enroll-academic-year" name="academic_year" required maxlength="20" value="2026-2027" placeholder="2026-2027"></label><label>Semester<select id="enroll-semester" name="semester" required><option value="1st Semester">1st Semester</option><option value="2nd Semester">2nd Semester</option><option value="Summer">Summer</option></select></label></div><div class="form-actions"><button id="enroll-student-button" class="btn secondary" type="submit" disabled>Enroll Student</button></div></form>
 <style>
 .student-suggestions{margin-top:6px;border:1px solid var(--border-color, #d8dee8);border-radius:10px;overflow:hidden;background:var(--panel-bg, #fff);box-shadow:0 8px 20px rgba(0,0,0,.08);max-height:280px;overflow-y:auto}
 .student-suggestions[hidden]{display:none}
@@ -12,6 +12,10 @@
 .student-suggestion strong,.student-suggestion small{display:block}
 .student-suggestion small{margin-top:3px;opacity:.75}
 .student-suggestion-empty{padding:12px;color:var(--muted, #667085);font-size:.9rem}
+.selected-student-status{display:block;margin-top:5px;color:var(--muted, #667085)}
+#enroll-student-button:disabled{opacity:.55;cursor:not-allowed}
+#enroll-student-button.is-ready{background:#2563eb!important;border-color:#2563eb!important;color:#fff!important;opacity:1}
+.student-suggestion.is-selected{background:#dbeafe;color:#1d4ed8}
 </style>
 <script>
 (() => {
@@ -20,11 +24,34 @@
   const form = document.getElementById("enroll-existing-student-form");
   const year = document.getElementById("enroll-academic-year");
   const semester = document.getElementById("enroll-semester");
-  if (!input || !list || !form) return;
+  const selectedNumber = document.getElementById("selected-student-number");
+  const status = document.getElementById("selected-student-status");
+  const enrollButton = document.getElementById("enroll-student-button");
+  if (!input || !list || !form || !selectedNumber || !enrollButton) return;
 
   const endpoint = {{ url_for('student_suggestions', subject_id=subject.id)|tojson }};
   let timer;
   let requestNumber = 0;
+  let selectedStudent = null;
+
+  function updateEnrollButton() {
+    const ready = Boolean(selectedStudent && selectedNumber.value &&
+      input.value.trim() && year.value.trim() && semester.value);
+    enrollButton.disabled = !ready;
+    enrollButton.classList.toggle("is-ready", ready);
+    enrollButton.classList.toggle("primary", ready);
+    enrollButton.classList.toggle("secondary", !ready);
+    status.textContent = selectedStudent
+      ? "Selected: " + selectedStudent.name + " (" + selectedStudent.student_number + ")"
+      : "No student selected.";
+    status.style.color = selectedStudent ? "#2563eb" : "";
+  }
+
+  function clearSelection() {
+    selectedStudent = null;
+    selectedNumber.value = "";
+    updateEnrollButton();
+  }
 
   function showMessage(message) {
     list.replaceChildren();
@@ -43,7 +70,6 @@
       list.replaceChildren();
       return;
     }
-
     showMessage("Searching students...");
     const params = new URLSearchParams({
       q: query,
@@ -70,30 +96,50 @@
         const name = document.createElement("strong");
         name.textContent = student.name;
         const detail = document.createElement("small");
-        detail.textContent = student.student_number + (student.email ? " · " + student.email : "");
+        detail.textContent = [student.email, student.student_number].filter(Boolean).join(" · ");
         button.append(name, detail);
         button.addEventListener("click", () => {
-          input.value = student.student_number;
+          selectedStudent = student;
+          selectedNumber.value = student.student_number;
+          input.value = student.name;
+          list.querySelectorAll(".student-suggestion").forEach(option => {
+            option.classList.toggle("is-selected", option === button);
+            option.setAttribute("aria-selected", option === button ? "true" : "false");
+          });
           list.hidden = true;
-          form.requestSubmit();
+          updateEnrollButton();
         });
         list.appendChild(button);
       });
       list.hidden = false;
     } catch (error) {
-      if (thisRequest === requestNumber) showMessage("Unable to load recommendations. You can enter the exact student number.");
+      if (thisRequest === requestNumber) showMessage("Unable to load recommendations. Please try again.");
     }
   }
 
   input.addEventListener("input", () => {
+    clearSelection();
     window.clearTimeout(timer);
     timer = window.setTimeout(searchStudents, 250);
   });
-  year.addEventListener("change", searchStudents);
-  semester.addEventListener("change", searchStudents);
+  year.addEventListener("change", () => {
+    clearSelection();
+    searchStudents();
+  });
+  semester.addEventListener("change", () => {
+    clearSelection();
+    searchStudents();
+  });
+  form.addEventListener("submit", event => {
+    if (!selectedStudent || !selectedNumber.value || !year.value.trim() || !semester.value) {
+      event.preventDefault();
+      updateEnrollButton();
+    }
+  });
   document.addEventListener("click", event => {
     if (!list.contains(event.target) && event.target !== input) list.hidden = true;
   });
+  updateEnrollButton();
 })();
 </script>{% endif %}{% if not subject.is_active %}<div class="panel"><p class="muted">This subject is deleted from the active catalog. Existing student enrollments and grade history are read-only and preserved.</p></div>{% endif %}
 <div class="panel table-panel"><div class="panel-heading"><div><h3>Enrolled students <span class="count-pill">{{ students|length }}</span></h3><p class="muted">Add midterms and finals separately. Editing a grade preserves the previous value in history.</p></div></div>
