@@ -3,7 +3,7 @@ import io
 import os
 import secrets
 import hmac
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import psycopg
 from psycopg.rows import dict_row
@@ -17,8 +17,19 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "change-this-development-secret-before-deployment")
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+_secret_key = os.getenv("SECRET_KEY")
+_is_production = os.getenv("RENDER") == "true" or os.getenv("FLASK_ENV") == "production"
+if not _secret_key and _is_production:
+    raise RuntimeError("SECRET_KEY must be set in the production environment.")
+app.secret_key = _secret_key or secrets.token_hex(32)
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=_is_production,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+    SESSION_REFRESH_EACH_REQUEST=True,
+    MAX_CONTENT_LENGTH=1024 * 1024,
+)
 
 
 @app.before_request
@@ -29,6 +40,25 @@ def protect_post_requests():
         expected = session.get("csrf_token", "")
         if not submitted or not expected or not hmac.compare_digest(submitted, expected):
             abort(400, description="Invalid or missing security token. Refresh the page and try again.")
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+def password_validation_error(password):
+    if len(password) < 12:
+        return "Password must be at least 12 characters long."
+    if len(password) > 128:
+        return "Password must be no longer than 128 characters."
+    if not password.strip():
+        return "Password cannot contain only spaces."
+    return None
 
 
 @app.context_processor
@@ -155,9 +185,9 @@ def create_admin_command():
     """Interactively create an administrator account."""
     import getpass
     username = input("Admin username: ").strip()
-    password = getpass.getpass("Admin password (minimum 10 characters): ")
-    if not username or len(password) < 10:
-        raise SystemExit("Username is required and password must be at least 10 characters.")
+    password = getpass.getpass("Admin password (minimum 12 characters): ")
+    if not username or password_validation_error(password):
+        raise SystemExit("Username is required and password must be 12-128 characters and not blank.")
     init_db()
     with db_connection() as conn:
         exists = conn.execute("SELECT id FROM admins WHERE username = %s", (username,)).fetchone()
@@ -177,6 +207,7 @@ def login():
             admin = conn.execute("SELECT * FROM admins WHERE username = %s", (username,)).fetchone()
         if admin and check_password_hash(admin["password_hash"], password):
             session.clear()
+            session.permanent = True
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             return redirect(request.args.get("next") or url_for("dashboard"))
@@ -398,17 +429,18 @@ def student_login():
         password = request.form.get("password", "")
         with db_connection() as conn:
             account = conn.execute(
-                "SELECT sa.id, sa.password_hash, s.id AS student_id, s.first_name, s.last_name "
+                "SELECT sa.id, sa.password_hash, sa.is_active, s.id AS student_id, s.first_name, s.last_name "
                 "FROM student_accounts sa JOIN students s ON s.id = sa.student_id WHERE LOWER(sa.email) = %s",
                 (email,)
             ).fetchone()
-        if account and check_password_hash(account["password_hash"], password):
+        if account and check_password_hash(account["password_hash"], password) and account["is_active"]:
             session.clear()
+            session.permanent = True
             session["student_account_id"] = account["id"]
             session["student_id"] = account["student_id"]
             session["student_name"] = account["first_name"] + " " + account["last_name"]
             return redirect(url_for("student_portal"))
-        flash("Invalid email or password. If you have not registered, create a student account first.", "error")
+        flash("Unable to sign in. Check your credentials or contact the school administrator if your account is awaiting approval.", "error")
     return render_template("student_login.html")
 
 
@@ -421,8 +453,8 @@ def student_register():
         confirm_password = request.form.get("confirm_password", "")
         if not student_number or not email:
             flash("Please complete every field.", "error")
-        elif len(password) < 10:
-            flash("Password must be at least 10 characters long.", "error")
+        elif password_validation_error(password):
+            flash(password_validation_error(password), "error")
         elif password != confirm_password:
             flash("Passwords do not match.", "error")
         else:
@@ -443,10 +475,10 @@ def student_register():
                             flash("An account already exists for this student or email. Please sign in.", "error")
                         else:
                             conn.execute(
-                                "INSERT INTO student_accounts (student_id, email, password_hash) VALUES (%s, %s, %s)",
+                                "INSERT INTO student_accounts (student_id, email, password_hash, is_active) VALUES (%s, %s, %s, FALSE)",
                                 (student["id"], email, generate_password_hash(password))
                             )
-                            flash("Student account created. You can now sign in.", "success")
+                            flash("Your registration request has been submitted. A school administrator must approve access before you can view student records.", "success")
                             return redirect(url_for("student_login"))
             except psycopg.errors.UniqueViolation:
                 flash("An account already exists for this student or email. Please sign in.", "error")
@@ -462,8 +494,8 @@ def create_admin_account():
         confirm_password = request.form.get("confirm_password", "")
         if not username:
             flash("Username is required.", "error")
-        elif len(password) < 10:
-            flash("Password must be at least 10 characters long.", "error")
+        elif password_validation_error(password):
+            flash(password_validation_error(password), "error")
         elif password != confirm_password:
             flash("Passwords do not match.", "error")
         else:
@@ -476,6 +508,44 @@ def create_admin_account():
             except psycopg.errors.UniqueViolation:
                 flash("That administrator username already exists.", "error")
     return render_template("admin_register.html")
+
+
+@app.route("/admin/student-accounts")
+@login_required
+def manage_student_accounts():
+    with db_connection() as conn:
+        pending_accounts = conn.execute(
+            """SELECT sa.id, sa.email, sa.created_at, s.student_number, s.first_name, s.last_name
+               FROM student_accounts sa JOIN students s ON s.id = sa.student_id
+               WHERE sa.is_active = FALSE ORDER BY sa.created_at"""
+        ).fetchall()
+    return render_template("admin_student_accounts.html", pending_accounts=pending_accounts)
+
+
+@app.post("/admin/student-accounts/<int:account_id>/approve")
+@login_required
+def approve_student_account(account_id):
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE student_accounts SET is_active = TRUE WHERE id = %s AND is_active = FALSE",
+            (account_id,)
+        )
+    flash("Student account approved." if result.rowcount else "Pending account not found.",
+          "success" if result.rowcount else "error")
+    return redirect(url_for("manage_student_accounts"))
+
+
+@app.post("/admin/student-accounts/<int:account_id>/disable")
+@login_required
+def disable_student_account(account_id):
+    with db_connection() as conn:
+        result = conn.execute(
+            "UPDATE student_accounts SET is_active = FALSE WHERE id = %s AND is_active = TRUE",
+            (account_id,)
+        )
+    flash("Student account access disabled." if result.rowcount else "Active account not found.",
+          "success" if result.rowcount else "error")
+    return redirect(url_for("manage_student_accounts"))
 
 
 @app.route("/student/portal")
