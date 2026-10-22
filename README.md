@@ -1,4 +1,4 @@
-# Student Grade Management and Performance Analyzer
+# passASADO or FAILet
 
 A local, rule-based Flask + PostgreSQL web application. It does **not** use AI, machine learning, AI APIs, or AI services. Grade and status decisions are made by the explicit Python functions in `app.py`.
 
@@ -84,6 +84,18 @@ Stop the local server with `Ctrl+C` in the terminal.
 | Subject grade ≥ 90 / ≥ 75 / below 75 | Excellent / Passed / Needs Improvement |
 
 The overall average is the arithmetic mean of the five subject grades. No subject weighting was provided, so all five are equally weighted.
+
+
+## Subject-based grading, GWA, and reports
+
+1. Create a student profile from **Students** (profile details only).
+2. Open **Subjects**, create the subject code/name/units, then open it and enroll students for an academic year and semester.
+3. From the subject roster, open **Manage grades** and enter a percentage for **Midterms** or **Finals**. Saving a term again edits its current grade and records the previous/new value in grade history. Deleting a grade also leaves a history entry.
+4. GWA uses the unit-weighted average of grade points for the latest academic year/semester with records. If only midterms are entered, the displayed GWA is interim; Dean's List eligibility stays pending until both midterms and finals exist for every enrolled subject.
+5. The current sample percentage conversion is: 97–100 = 1.00; 94–96 = 1.25; 91–93 = 1.50; 88–90 = 1.75; 85–87 = 2.00; 82–84 = 2.25; 79–81 = 2.50; 76–78 = 2.75; 75 = 3.00; below 75 = 5.00. Midterms and finals are equally weighted in the current subject percentage.
+6. The sample Dean's List defaults are GWA ≤ 1.75 and no subject grade point worse than 2.50. Administrators can edit these thresholds from **Subjects**. Confirm your institution's official conversion, weights, and eligibility requirements before using the status as an official decision.
+7. **Import grade file** accepts CSV or XLSX with the headers Student Number, Subject Code, Academic Year, Semester, Term, and Percentage. Use the downloadable CSV template. The importer validates rows, reports skipped entries, creates missing enrollments for valid student/subject pairs, and records changes in history.
+8. **Export grade report** creates an Excel workbook with current grade records and a GWA summary. Existing CSV/PDF student exports and the separate sign-in Excel report remain available.
 
 ## Database
 `schema.sql` creates the `admins` and `students` tables and enforces 0–100 constraints for attendance and grades. The database must be created separately first. `flask --app app init-db` can be run again safely to ensure tables exist.
