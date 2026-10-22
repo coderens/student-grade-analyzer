@@ -55,7 +55,26 @@ CREATE TABLE IF NOT EXISTS students (
     mathematics NUMERIC(5,2) NOT NULL CHECK (mathematics >= 0 AND mathematics <= 100),
     networking NUMERIC(5,2) NOT NULL CHECK (networking >= 0 AND networking <= 100),
     web_development NUMERIC(5,2) NOT NULL CHECK (web_development >= 0 AND web_development <= 100),
+    tracker_id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS students_name_idx ON students (last_name, first_name);
+
+
+ALTER TABLE students ADD COLUMN IF NOT EXISTS tracker_id UUID DEFAULT gen_random_uuid();
+UPDATE students SET tracker_id = gen_random_uuid() WHERE tracker_id IS NULL;
+ALTER TABLE students ALTER COLUMN tracker_id SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS students_tracker_id_idx ON students (tracker_id);
+
+CREATE TABLE IF NOT EXISTS sign_in_logs (
+    id BIGSERIAL PRIMARY KEY,
+    account_type VARCHAR(10) NOT NULL CHECK (account_type IN ('admin', 'student')),
+    account_id BIGINT NOT NULL,
+    account_identifier VARCHAR(100) NOT NULL,
+    account_name VARCHAR(205) NOT NULL,
+    tracker_id UUID NOT NULL,
+    signed_in_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS sign_in_logs_signed_in_idx ON sign_in_logs (signed_in_at DESC);
+CREATE INDEX IF NOT EXISTS sign_in_logs_account_idx ON sign_in_logs (account_type, account_id, signed_in_at DESC);
