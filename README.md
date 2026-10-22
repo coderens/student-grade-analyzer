@@ -132,6 +132,12 @@ These commands prompt for account details and passwords. Do not paste database c
 The database schema is applied by `flask --app app init-db` and the configured Render startup command. The `session_version` migration and audit table are additive and do not delete student records.
 
 
+## Per-administrator student trackers
+- Every student record created by an administrator is assigned to that administrator. Student lists, search, subject rosters, grade entry/edit/delete, dashboard calculations, account approvals, imports, and exports are scoped to the signed-in administrator.
+- New administrator accounts start with an empty student tracker. Existing student records are preserved with no administrator owner and remain separate from every new account's tracker; they are not automatically assigned or deleted.
+- Student numbers are unique within each administrator's tracker, so separate trackers can contain independent records without exposing them to other administrators.
+- Existing subjects remain in the shared subject catalog, but student rosters and counts show only records owned by the current administrator.
+ 
 ## Account tracking and Excel sign-in report
 - Every administrator and student record receives a unique tracker ID.
 - Successful administrator sign-ins and approved student sign-ins are recorded without storing passwords or session secrets.
