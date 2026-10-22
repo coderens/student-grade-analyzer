@@ -1,166 +1,117 @@
+            "course_section": request.form.get("course_section", ""),
+            **{key: request.form.get(key, "") for key, _ in SUBJECTS},
+        }
 
-@app.cli.command("create-admin")
-def create_admin_command():
-    """Interactively create an administrator account."""
-    import getpass
+    return page("Edit student", STUDENT_FORM, heading="Edit student", student=student, subjects=SUBJECTS, error=error)
 
-    username = input("Admin username: ").strip()
-    password = getpass.getpass(
-        "Admin password (minimum 10 characters): "
-    )
 
-    if not username or len(username) > 80 or len(password) < 10:
-        raise SystemExit(
-            "Username must be 1–80 characters and password "
-            "must be at least 10 characters."
-        )
-
+@app.route("/students/<int:student_id>/delete", methods=["POST"])
+@login_required
+def student_delete(student_id):
     init_db()
-
     with db_connection() as conn:
-        exists = conn.execute(
-            "SELECT id FROM admins WHERE username = %s",
-            (username,)
-        ).fetchone()
+        conn.execute("DELETE FROM students WHERE id = %s", (student_id,))
+    flash("Student deleted.", "success")
+    return redirect(url_for("students"))
 
-        if exists:
-            raise SystemExit("That username already exists.")
 
-        conn.execute(
-            """
-            INSERT INTO admins (username, password_hash)
-            VALUES (%s, %s)
-            """,
-            (username, generate_password_hash(password))
+# ------------------------------------------------------------
+# CSV and PDF exports
+# ------------------------------------------------------------
+def get_student_report_rows():
+    with db_connection() as conn:
+        rows = conn.execute("SELECT * FROM students ORDER BY full_name").fetchall()
+    output = []
+    for row in rows:
+        item = dict(row)
+        item["average"] = average_for(item)
+        item["grade_label"] = grade_label(item["average"])
+        output.append(item)
+    return output
+
+
+@app.route("/export/csv")
+@login_required
+def export_csv():
+    init_db()
+    rows = get_student_report_rows()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Student Number", "Full Name", "Course / Section"] +
+                    [label for _, label in SUBJECTS] + ["Average", "Interpretation"])
+    for row in rows:
+        writer.writerow(
+            [row["student_number"], row["full_name"], row["course_section"]] +
+            [row[key] for key, _ in SUBJECTS] +
+            [f'{row["average"]:.2f}', row["grade_label"]]
         )
+    memory = io.BytesIO(output.getvalue().encode("utf-8-sig"))
+    memory.seek(0)
+    return send_file(memory, mimetype="text/csv", as_attachment=True, download_name="student_grade_report.csv")
 
-    print("Administrator created successfully.")
 
-
-@app.route("/setup-admin", methods=["GET", "POST"])
-def setup_admin():
-    """Temporarily create the first administrator."""
-    setup_token = os.getenv("ADMIN_SETUP_TOKEN")
-
-    if not setup_token:
-        abort(404)
-
-    if request.method == "POST":
-        submitted_token = request.form.get("setup_token", "")
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-
-        if not hmac.compare_digest(submitted_token, setup_token):
-            abort(403)
-
-        if not username or len(username) > 80:
-            return "Username must be 1–80 characters.", 400
-
-        if len(password) < 10:
-            return "Password must be at least 10 characters.", 400
-
-        # Lock the table while checking and creating the first admin.
-        with db_connection() as conn:
-            conn.execute(
-                "LOCK TABLE admins IN EXCLUSIVE MODE"
-            )
-
-            admin_count = conn.execute(
-                "SELECT COUNT(*) AS total FROM admins"
-            ).fetchone()["total"]
-
-            if admin_count > 0:
-                abort(404)
-
-            conn.execute(
-                """
-                INSERT INTO admins (username, password_hash)
-                VALUES (%s, %s)
-                """,
-                (username, generate_password_hash(password))
-            )
-
-        return (
-            "Administrator created successfully. "
-            "Remove this temporary setup route and the "
-            "ADMIN_SETUP_TOKEN environment variable."
+@app.route("/export/pdf")
+@login_required
+def export_pdf():
+    init_db()
+    rows = get_student_report_rows()
+    memory = io.BytesIO()
+    document = SimpleDocTemplate(memory, pagesize=landscape(letter), rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("Student Grade Analyzer — Report", styles["Title"]),
+        Spacer(1, 12),
+        Paragraph(f"Total students: {len(rows)}", styles["Normal"]),
+        Spacer(1, 12),
+    ]
+    table_data = [["Student No.", "Full Name", "Course / Section"] +
+                  [label for _, label in SUBJECTS] + ["Average", "Interpretation"]]
+    for row in rows:
+        table_data.append(
+            [str(row["student_number"]), str(row["full_name"]), str(row["course_section"])] +
+            [f'{float(row[key]):.2f}' for key, _ in SUBJECTS] +
+            [f'{row["average"]:.2f}', row["grade_label"]]
         )
-
-    return render_template_string("""
-        <!doctype html>
-        <html lang="en">
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport"
-                  content="width=device-width, initial-scale=1">
-            <title>Initial Administrator Setup</title>
-        </head>
-        <body>
-            <h1>Create First Administrator</h1>
-
-            <form method="post">
-                <input type="hidden" name="csrf_token"
-                       value="{{ csrf_token }}">
-
-                <p>
-                    <label>Setup token<br>
-                        <input type="password" name="setup_token"
-                               required autocomplete="off">
-                    </label>
-                </p>
-
-                <p>
-                    <label>Username<br>
-                        <input type="text" name="username"
-                               maxlength="80" required>
-                    </label>
-                </p>
-
-                <p>
-                    <label>Password (minimum 10 characters)<br>
-                        <input type="password" name="password"
-                               minlength="10" required
-                               autocomplete="new-password">
-                    </label>
-                </p>
-
-                <button type="submit">Create Administrator</button>
-            </form>
-        </body>
-        </html>
-    """)
+    table = Table(table_data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#152544")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd2df")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f5f9")]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(table)
+    document.build(story)
+    memory.seek(0)
+    return send_file(memory, mimetype="application/pdf", as_attachment=True, download_name="student_grade_report.pdf")
 
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+# ------------------------------------------------------------
+# Friendly error pages
+# ------------------------------------------------------------
+@app.errorhandler(400)
+def bad_request(error):
+    return page("Bad request", """
+      <section class="card"><h1>Request could not be processed</h1>
+      <p>{{ error.description or 'Please refresh the page and try again.' }}</p>
+      <a class="button" href="{{ url_for('login') }}">Return</a></section>
+    """, error=error), 400
 
-        with db_connection() as conn:
-            admin = conn.execute(
-                """
-                SELECT id, username, password_hash
-                FROM admins
-                WHERE username = %s
-                """,
-                (username,)
-            ).fetchone()
 
-        if admin and check_password_hash(
-            admin["password_hash"], password
-        ):
-            session.clear()
-            session["admin_id"] = admin["id"]
-            session["admin_username"] = admin["username"]
+@app.errorhandler(403)
+def forbidden(_error):
+    return page("Forbidden", "<section class='card'><h1>Access denied</h1><p>You are not allowed to perform this action.</p></section>"), 403
 
-            # Only redirect to a local application path.
-            next_url = request.args.get("next", "")
-            if not next_url.startswith("/") or next_url.startswith("//"):
-                next_url = url_for("dashboard")
 
-            return redirect(next_url)
+@app.errorhandler(404)
+def not_found(_error):
+    return page("Not found", "<section class='card'><h1>Page not found</h1><p>The requested page is unavailable.</p></section>"), 404
 
-        flash("Invalid username or password.", "error")
 
-    return render_template("login.html")
+if __name__ == "__main__":
+    # For local development only. Production hosts such as Render use Gunicorn.
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False)
