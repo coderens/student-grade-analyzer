@@ -4,6 +4,23 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}passASADO or FAILet{% endblock %} | passASADO or FAILet</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% if session.get('admin_id') %}
+  <style>
+    .signout-modal[hidden] { display: none !important; }
+    .signout-modal { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; padding: 20px; background: rgba(15, 23, 42, .48); backdrop-filter: blur(3px); }
+    .signout-dialog { width: min(100%, 400px); padding: 26px; border-radius: 18px; background: #fff; color: #1f2937; box-shadow: 0 24px 70px rgba(0,0,0,.24); animation: signout-pop .16s ease-out; }
+    .signout-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 16px; border-radius: 14px; background: #fff1f2; color: #d64f5e; font-size: 25px; }
+    .signout-dialog h2 { margin: 0 0 8px; font-size: 21px; }
+    .signout-dialog p { margin: 0; color: #6b7280; line-height: 1.5; }
+    .signout-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+    .signout-actions button { border: 0; border-radius: 9px; padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+    .signout-cancel { background: #f3f4f6; color: #374151; }
+    .signout-confirm { background: #d64f5e; color: #fff; }
+    .signout-actions button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+    @keyframes signout-pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @media (prefers-reduced-motion: reduce) { .signout-dialog { animation: none; } }
+  </style>
+  {% endif %}
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -22,8 +39,45 @@
   <a class="nav-link" href="{{ url_for('export_csv') }}">⇩ &nbsp; Export CSV</a>
   <a class="nav-link" href="{{ url_for('export_pdf') }}">▤ &nbsp; Export PDF</a>
   <a class="nav-link {% if request.endpoint == 'export_sign_in_report' %}active{% endif %}" href="{{ url_for('export_sign_in_report') }}">▦ &nbsp; Sign-in Excel Report</a>
-  <div class="sidebar-bottom"><div class="avatar">{{ session.get('admin_username','A')[:1].upper() }}</div><div class="admin-info"><b>{{ session.get('admin_username') }}</b><small>Administrator</small><small class="tracker-id" title="Your unique account tracker ID">ID: {{ session.get('tracker_id', 'available after sign-in') }}</small></div><form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" title="Log out">↪</button></form></div>
+  <div class="sidebar-bottom"><div class="avatar">{{ session.get('admin_username','A')[:1].upper() }}</div><div class="admin-info"><b>{{ session.get('admin_username') }}</b><small>Administrator</small><small class="tracker-id" title="Your unique account tracker ID">ID: {{ session.get('tracker_id', 'available after sign-in') }}</small></div><form id="logoutForm" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="logout" id="logoutTrigger" type="button" title="Log out" aria-label="Log out">↪</button></form></div>
 </aside>
+<div class="signout-modal" id="signoutModal" hidden>
+  <section class="signout-dialog" role="dialog" aria-modal="true" aria-labelledby="signoutTitle" aria-describedby="signoutDescription">
+    <div class="signout-icon" aria-hidden="true">↪</div>
+    <h2 id="signoutTitle">Confirm sign out</h2>
+    <p id="signoutDescription">Are you sure you want to sign out of your account?</p>
+    <div class="signout-actions">
+      <button type="button" class="signout-cancel" id="cancelSignout">Cancel</button>
+      <button type="submit" form="logoutForm" class="signout-confirm">Yes, sign out</button>
+    </div>
+  </section>
+</div>
+<script>
+  (() => {
+    const trigger = document.getElementById('logoutTrigger');
+    const modal = document.getElementById('signoutModal');
+    const cancel = document.getElementById('cancelSignout');
+    if (!trigger || !modal || !cancel) return;
+    let previousFocus = null;
+    const openModal = () => {
+      previousFocus = document.activeElement;
+      modal.hidden = false;
+      cancel.focus();
+    };
+    const closeModal = () => {
+      modal.hidden = true;
+      if (previousFocus) previousFocus.focus();
+    };
+    trigger.addEventListener('click', openModal);
+    cancel.addEventListener('click', closeModal);
+    modal.addEventListener('click', event => {
+      if (event.target === modal) closeModal();
+    });
+    document.addEventListener('keydown', event => {
+      if (!modal.hidden && event.key === 'Escape') closeModal();
+    });
+  })();
+</script>
 {% endif %}
 <main class="main {% if not session.get('admin_id') %}main-auth{% endif %}">
   {% if session.get('admin_id') %}<header class="topbar"><div><span class="eyebrow">STUDENT GRADE MANAGEMENT</span><h1>{% block page_heading %}Dashboard{% endblock %}</h1></div><div class="topbar-date">● &nbsp; Local system <span>{{ now_label if now_label else 'Ready' }}</span></div></header>{% endif %}
