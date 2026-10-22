@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS student_accounts (
     student_id BIGINT NOT NULL UNIQUE REFERENCES students(id) ON DELETE CASCADE,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS student_accounts_email_idx ON student_accounts (LOWER(email));
