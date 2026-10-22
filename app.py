@@ -166,9 +166,9 @@ def login_required(view):
     return wrapped
 
 
-def log_audit_event(conn, action, entity_type, entity_id=None, details=None, actor_admin_id=None):
+def log_audit_event(conn, action, entity_type, entity_id=None, details=None, actor_admin_id="session"):
     """Write a minimal audit record in the same transaction as the change."""
-    actor_id = actor_admin_id if actor_admin_id is not None else session.get("admin_id")
+    actor_id = session.get("admin_id") if actor_admin_id == "session" else actor_admin_id
     conn.execute(
         """INSERT INTO audit_logs (actor_admin_id, action, entity_type, entity_id, details)
            VALUES (%s, %s, %s, %s, %s)""",
