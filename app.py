@@ -140,15 +140,20 @@ def enrich_student(student):
     return student
 
 
-def fetch_students(search=""):
+def fetch_students(search="", admin_id=None):
+    """Return only student records owned by this administrator."""
+    if admin_id is None:
+        raise ValueError("admin_id is required to keep student trackers isolated.")
     with db_connection() as conn:
         if search:
             pattern = f"%{search}%"
             rows = conn.execute("""SELECT * FROM students
-                WHERE student_number ILIKE %s OR first_name ILIKE %s OR last_name ILIKE %s OR email ILIKE %s
-                ORDER BY last_name, first_name""", (pattern, pattern, pattern, pattern)).fetchall()
+                WHERE owner_admin_id = %s
+                  AND (student_number ILIKE %s OR first_name ILIKE %s OR last_name ILIKE %s OR email ILIKE %s)
+                ORDER BY last_name, first_name""", (admin_id, pattern, pattern, pattern, pattern)).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM students ORDER BY last_name, first_name").fetchall()
+            rows = conn.execute("SELECT * FROM students WHERE owner_admin_id = %s ORDER BY last_name, first_name",
+                                (admin_id,)).fetchall()
     return [enrich_student(r) for r in rows]
 
 
@@ -599,8 +604,11 @@ def student_login():
                    FROM student_accounts sa
                    JOIN students st ON st.id = sa.student_id
                    WHERE st.student_number = %s""", (student_number,)
-            ).fetchone()
-            if account and check_password_hash(account["password_hash"], password):
+            ).fetchall()
+            matched_account = next((candidate for candidate in account
+                                    if check_password_hash(candidate["password_hash"], password)), None)
+            if matched_account:
+                account = matched_account
                 if account["status"] != "approved":
                     flash("Your account is awaiting administrator approval.", "error")
                     return render_template("student_login.html")
@@ -636,10 +644,13 @@ def student_register():
                     """SELECT id, student_number, email FROM students
                        WHERE student_number = %s AND LOWER(COALESCE(email, '')) = %s""",
                     (student_number, email)
-                ).fetchone()
+                ).fetchall()
                 if not student or not email:
                     flash("We couldn't match those details to a student record. Contact your administrator.", "error")
+                elif len(student) != 1:
+                    flash("More than one matching student record exists. Contact the administrator who manages your record before requesting portal access.", "error")
                 else:
+                    student = student[0]
                     existing = conn.execute(
                         "SELECT id FROM student_accounts WHERE student_id = %s", (student["id"],)
                     ).fetchone()
@@ -757,7 +768,7 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
-    students = fetch_students()
+    students = fetch_students(admin_id=session["admin_id"])
     graded_students = [s for s in students if s["average"] is not None]
     total = len(students)
     passed = sum(s["status"] == "PASSED" for s in graded_students)
@@ -779,9 +790,11 @@ def dashboard():
                       AVG(CASE WHEN gr.term IS NOT NULL THEN gr.percentage END) AS average_grade
                FROM subjects sub
                LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
-               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
+               LEFT JOIN students st ON st.id = ss.student_id AND st.owner_admin_id = %s
+               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id AND st.id IS NOT NULL
                WHERE sub.is_active = TRUE
-               GROUP BY sub.id ORDER BY sub.subject_name"""
+               GROUP BY sub.id ORDER BY sub.subject_name""",
+            (session["admin_id"],)
         ).fetchall()
     subjects = [row["subject_name"] for row in subject_rows]
     subject_averages = [round(float(row["average_grade"]), 2) if row["average_grade"] is not None else 0 for row in subject_rows]
@@ -893,9 +906,12 @@ def subjects_page():
                 flash("Subject code and subject name must both be unique.", "error")
     with db_connection() as conn:
         subjects = conn.execute(
-            """SELECT sub.*, COUNT(DISTINCT ss.student_id) AS student_count
-               FROM subjects sub LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
-               WHERE sub.is_active = TRUE GROUP BY sub.id ORDER BY sub.subject_name"""
+            """SELECT sub.*, COUNT(DISTINCT st.id) AS student_count
+               FROM subjects sub
+               LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
+               LEFT JOIN students st ON st.id = ss.student_id AND st.owner_admin_id = %s
+               WHERE sub.is_active = TRUE GROUP BY sub.id ORDER BY sub.subject_name""",
+            (session["admin_id"],)
         ).fetchall()
     with db_connection() as conn:
         policy = conn.execute("SELECT dean_list_gwa_max, max_subject_gwa FROM grading_policies WHERE id = 1").fetchone()
@@ -963,10 +979,12 @@ def subject_detail(subject_id):
                       MAX(CASE WHEN gr.term = 'Finals' THEN gr.percentage END) AS finals
                FROM student_subjects ss JOIN students st ON st.id = ss.student_id
                LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
-               WHERE ss.subject_id = %s
-               GROUP BY ss.id, st.id ORDER BY st.last_name, st.first_name""", (subject_id,)).fetchall()
+               WHERE ss.subject_id = %s AND st.owner_admin_id = %s
+               GROUP BY ss.id, st.id ORDER BY st.last_name, st.first_name""",
+            (subject_id, session["admin_id"])).fetchall()
         available_students = conn.execute(
-            "SELECT id, student_number, first_name, last_name FROM students ORDER BY last_name, first_name"
+            "SELECT id, student_number, first_name, last_name FROM students WHERE owner_admin_id = %s ORDER BY last_name, first_name",
+            (session["admin_id"],)
         ).fetchall()
     if not subject: abort(404)
     return render_template("subject_detail.html", subject=subject, students=students, available_students=available_students)
@@ -991,7 +1009,8 @@ def student_suggestions(subject_id):
         matches = conn.execute(
             """SELECT st.student_number, st.first_name, st.last_name, st.email
                FROM students st
-               WHERE (st.student_number ILIKE %s OR st.first_name ILIKE %s
+               WHERE st.owner_admin_id = %s
+                 AND (st.student_number ILIKE %s OR st.first_name ILIKE %s
                       OR st.last_name ILIKE %s OR (st.first_name || ' ' || st.last_name) ILIKE %s
                       OR COALESCE(st.email, '') ILIKE %s)
                  AND NOT EXISTS (
@@ -1001,7 +1020,7 @@ def student_suggestions(subject_id):
                  )
                ORDER BY st.last_name, st.first_name
                LIMIT 8""",
-            (pattern, pattern, pattern, pattern, pattern, subject_id, academic_year, semester)
+            (session["admin_id"], pattern, pattern, pattern, pattern, pattern, subject_id, academic_year, semester)
         ).fetchall()
     return jsonify({"students": [
         {"student_number": row["student_number"],
@@ -1031,8 +1050,8 @@ def enroll_student(subject_id):
                 flash("This subject is not active and cannot accept enrollments.", "error")
                 return redirect(url_for("subjects_page"))
             student = conn.execute(
-                "SELECT id, first_name, last_name FROM students WHERE student_number = %s",
-                (student_number,)
+                "SELECT id, first_name, last_name FROM students WHERE student_number = %s AND owner_admin_id = %s",
+                (student_number, session["admin_id"])
             ).fetchone()
             if not student:
                 flash("No student found with that student number. Use + Add Student to create a new profile.", "error")
@@ -1059,7 +1078,9 @@ def enrollment_grades(enrollment_id):
             """SELECT ss.*, st.student_number, st.first_name, st.last_name,
                       sub.subject_code, sub.subject_name, sub.units
                FROM student_subjects ss JOIN students st ON st.id = ss.student_id
-               JOIN subjects sub ON sub.id = ss.subject_id WHERE ss.id = %s""", (enrollment_id,)).fetchone()
+               JOIN subjects sub ON sub.id = ss.subject_id
+               WHERE ss.id = %s AND st.owner_admin_id = %s""",
+            (enrollment_id, session["admin_id"])).fetchone()
     if not enrollment: abort(404)
     if request.method == "POST":
         term = request.form.get("term", "")
@@ -1107,7 +1128,11 @@ def delete_grade_record(record_id):
     with db_connection() as conn:
         record = conn.execute(
             """SELECT gr.id, gr.student_subject_id, gr.term, gr.percentage
-               FROM grade_records gr WHERE gr.id = %s""", (record_id,)).fetchone()
+               FROM grade_records gr
+               JOIN student_subjects ss ON ss.id = gr.student_subject_id
+               JOIN students st ON st.id = ss.student_id
+               WHERE gr.id = %s AND st.owner_admin_id = %s""",
+            (record_id, session["admin_id"])).fetchone()
         if not record:
             flash("Grade record was not found.", "error")
             return redirect(url_for("subjects_page"))
@@ -1158,7 +1183,8 @@ def import_grade_report():
                     grade = validate_grade(row.get("Percentage"))
                     if not student_number or not code or not year or len(year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer") or term not in ("Midterms", "Finals") or grade is None:
                         skipped.append(f"Row {row_number}: invalid or missing values."); continue
-                    student = conn.execute("SELECT id FROM students WHERE student_number = %s", (student_number,)).fetchone()
+                    student = conn.execute("SELECT id FROM students WHERE student_number = %s AND owner_admin_id = %s",
+                                           (student_number, session["admin_id"])).fetchone()
                     subject = conn.execute("SELECT id FROM subjects WHERE subject_code = %s AND is_active = TRUE", (code,)).fetchone()
                     if not student or not subject:
                         skipped.append(f"Row {row_number}: student number or subject code not found."); continue
@@ -1223,8 +1249,11 @@ def export_grade_report():
                       gr.term, gr.percentage, gr.updated_at
                FROM grade_records gr JOIN student_subjects ss ON ss.id = gr.student_subject_id
                JOIN students st ON st.id = ss.student_id JOIN subjects sub ON sub.id = ss.subject_id
-               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term""").fetchall()
-        students = conn.execute("SELECT id, student_number, first_name, last_name FROM students ORDER BY student_number").fetchall()
+               WHERE st.owner_admin_id = %s
+               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term""",
+            (session["admin_id"],)).fetchall()
+        students = conn.execute("SELECT id, student_number, first_name, last_name FROM students WHERE owner_admin_id = %s ORDER BY student_number",
+                                (session["admin_id"],)).fetchall()
         log_audit_event(conn, "export", "grade_report", details={"format": "xlsx"})
     for row in records:
         records_sheet.append([row["student_number"], f'{row["first_name"]} {row["last_name"]}', row["subject_code"],
@@ -1250,7 +1279,7 @@ def export_grade_report():
 @app.route("/students")
 @login_required
 def students_page():
-    return render_template("students.html", students=fetch_students(request.args.get("q", "")),
+    return render_template("students.html", students=fetch_students(request.args.get("q", ""), admin_id=session["admin_id"]),
                            subjects=SUBJECTS, search=request.args.get("q", ""))
 
 
@@ -1280,9 +1309,9 @@ def add_student():
             with db_connection() as conn:
                 inserted = conn.execute(
                     """INSERT INTO students (student_number, first_name, last_name, email, attendance,
-                       programming, database, mathematics, networking, web_development)
-                       VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s, 0, 0, 0, 0, 0)
-                       RETURNING id""", data).fetchone()
+                       programming, database, mathematics, networking, web_development, owner_admin_id)
+                       VALUES (%(student_number)s, %(first_name)s, %(last_name)s, %(email)s, %(attendance)s, 0, 0, 0, 0, 0, %(owner_admin_id)s)
+                       RETURNING id""", {**data, "owner_admin_id": session["admin_id"]}).fetchone()
                 log_audit_event(conn, "create", "student", inserted["id"], {"changed_fields": ["student_record_created"]})
                 if subject_id:
                     enrollment = conn.execute(
@@ -1310,7 +1339,8 @@ def add_student():
 @login_required
 def edit_student(student_id):
     with db_connection() as conn:
-        existing = conn.execute("SELECT * FROM students WHERE id = %s", (student_id,)).fetchone()
+        existing = conn.execute("SELECT * FROM students WHERE id = %s AND owner_admin_id = %s",
+                                 (student_id, session["admin_id"])).fetchone()
     if not existing: abort(404)
     if request.method == "POST":
         data, errors = validate_student_profile_form(request.form)
@@ -1323,8 +1353,8 @@ def edit_student(student_id):
                 conn.execute(
                     """UPDATE students SET student_number=%(student_number)s, first_name=%(first_name)s,
                        last_name=%(last_name)s, email=%(email)s, attendance=%(attendance)s,
-                       updated_at=CURRENT_TIMESTAMP WHERE id=%(id)s""",
-                    {**data, "id": student_id})
+                       updated_at=CURRENT_TIMESTAMP WHERE id=%(id)s AND owner_admin_id=%(owner_admin_id)s""",
+                    {**data, "id": student_id, "owner_admin_id": session["admin_id"]})
                 log_audit_event(conn, "update", "student", student_id, {"changed_fields": sorted(data.keys())})
             flash("Student details updated.", "success")
             return redirect(url_for("students_page"))
@@ -1340,7 +1370,8 @@ def edit_student(student_id):
 def delete_student(student_id):
     with db_connection() as conn:
         deleted = conn.execute(
-            "DELETE FROM students WHERE id = %s RETURNING student_number", (student_id,)
+            "DELETE FROM students WHERE id = %s AND owner_admin_id = %s RETURNING student_number",
+            (student_id, session["admin_id"])
         ).fetchone()
         if deleted:
             log_audit_event(conn, "delete", "student", student_id,
@@ -1353,7 +1384,8 @@ def delete_student(student_id):
 @login_required
 def student_detail(student_id):
     with db_connection() as conn:
-        row = conn.execute("SELECT * FROM students WHERE id = %s", (student_id,)).fetchone()
+        row = conn.execute("SELECT * FROM students WHERE id = %s AND owner_admin_id = %s",
+                            (student_id, session["admin_id"])).fetchone()
     if not row: abort(404)
     return render_template("student_detail.html", student=enrich_student(row), subjects=SUBJECTS)
 
@@ -1368,8 +1400,9 @@ def export_csv():
                       gr.term, gr.percentage, gr.updated_at
                FROM grade_records gr JOIN student_subjects ss ON ss.id = gr.student_subject_id
                JOIN students st ON st.id = ss.student_id JOIN subjects sub ON sub.id = ss.subject_id
-               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term"""
-        ).fetchall()
+               WHERE st.owner_admin_id = %s
+               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term""",
+            (session["admin_id"],)).fetchall()
         log_audit_event(conn, "export_csv", "grade_report", details={"format": "csv"})
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1389,7 +1422,8 @@ def export_csv():
 @login_required
 def export_pdf():
     with db_connection() as conn:
-        students = conn.execute("SELECT id, student_number, first_name, last_name, attendance FROM students ORDER BY student_number").fetchall()
+        students = conn.execute("SELECT id, student_number, first_name, last_name, attendance FROM students WHERE owner_admin_id = %s ORDER BY student_number",
+                                (session["admin_id"],)).fetchall()
         log_audit_event(conn, "export_pdf", "grade_report", details={"format": "pdf"})
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=24, leftMargin=24, topMargin=24, bottomMargin=24)
@@ -1443,24 +1477,31 @@ def export_sign_in_report():
         sign_ins = conn.execute(
             """SELECT id, account_type, account_identifier, account_name,
                       tracker_id, signed_in_at
-               FROM sign_in_logs
-               ORDER BY signed_in_at DESC, id DESC"""
-        ).fetchall()
+               FROM sign_in_logs sil
+               WHERE (sil.account_type = 'admin' AND sil.account_id = %s)
+                  OR (sil.account_type = 'student' AND EXISTS (
+                      SELECT 1 FROM students st
+                      WHERE st.id = sil.account_id AND st.owner_admin_id = %s
+                  ))
+               ORDER BY signed_in_at DESC, id DESC""",
+            (session["admin_id"], session["admin_id"])).fetchall()
         admins = conn.execute(
             """SELECT a.id, a.username, a.tracker_id, a.created_at,
                       COUNT(s.id) AS sign_in_count
                FROM admins a LEFT JOIN sign_in_logs s
                  ON s.account_type = 'admin' AND s.account_id = a.id
-               GROUP BY a.id ORDER BY a.username"""
-        ).fetchall()
+               WHERE a.id = %s
+               GROUP BY a.id ORDER BY a.username""",
+            (session["admin_id"],)).fetchall()
         students = conn.execute(
             """SELECT st.id, st.student_number, st.first_name, st.last_name,
                       st.tracker_id, st.created_at,
                       COUNT(s.id) AS sign_in_count
                FROM students st LEFT JOIN sign_in_logs s
                  ON s.account_type = 'student' AND s.account_id = st.id
-               GROUP BY st.id ORDER BY st.last_name, st.first_name"""
-        ).fetchall()
+               WHERE st.owner_admin_id = %s
+               GROUP BY st.id ORDER BY st.last_name, st.first_name""",
+            (session["admin_id"],)).fetchall()
 
     for row in sign_ins:
         logs_sheet.append([
