@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS students (
     networking NUMERIC(5,2) NOT NULL CHECK (networking >= 0 AND networking <= 100),
     web_development NUMERIC(5,2) NOT NULL CHECK (web_development >= 0 AND web_development <= 100),
     tracker_id UUID NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    owner_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -153,3 +154,29 @@ CREATE TABLE IF NOT EXISTS grading_policies (
 );
 INSERT INTO grading_policies (id, dean_list_gwa_max, max_subject_gwa)
 VALUES (1, 1.75, 2.50) ON CONFLICT (id) DO NOTHING;
+
+
+-- Per-administrator student trackers. Existing records remain unassigned (owner_admin_id IS NULL)
+-- and are preserved separately; new records belong to the administrator who created them.
+ALTER TABLE students ADD COLUMN IF NOT EXISTS owner_admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL;
+
+DO $$
+DECLARE
+    unique_constraint_name TEXT;
+BEGIN
+    SELECT c.conname INTO unique_constraint_name
+    FROM pg_constraint c
+    WHERE c.conrelid = 'students'::regclass
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) = 'UNIQUE (student_number)'
+    LIMIT 1;
+    IF unique_constraint_name IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE students DROP CONSTRAINT %I', unique_constraint_name);
+    END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS students_owner_number_idx
+    ON students (owner_admin_id, student_number)
+    WHERE owner_admin_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS students_owner_name_idx
+    ON students (owner_admin_id, last_name, first_name);
