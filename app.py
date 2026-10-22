@@ -80,6 +80,56 @@ def safe_csv_cell(value):
     return value
 
 
+def _auth_identifier_hash(identifier):
+    normalized = (identifier or "").strip().casefold()
+    return hmac.new(app.secret_key.encode("utf-8"), normalized.encode("utf-8"), "sha256").hexdigest()
+
+
+def login_is_throttled(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM auth_login_attempts
+               WHERE identifier_hash = %s
+                 AND (locked_until > CURRENT_TIMESTAMP OR
+                      (attempt_count >= 8 AND first_attempt_at > CURRENT_TIMESTAMP - INTERVAL '15 minutes'))
+               LIMIT 1""",
+            (key,),
+        ).fetchone()
+    return row is not None
+
+
+def record_login_failure(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO auth_login_attempts (identifier_hash, attempt_count, first_attempt_at, locked_until)
+               VALUES (%s, 1, CURRENT_TIMESTAMP, NULL)
+               ON CONFLICT (identifier_hash) DO UPDATE SET
+                 attempt_count = CASE
+                   WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN 1
+                   ELSE auth_login_attempts.attempt_count + 1 END,
+                 first_attempt_at = CASE
+                   WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN CURRENT_TIMESTAMP
+                   ELSE auth_login_attempts.first_attempt_at END,
+                 locked_until = CASE
+                   WHEN (CASE
+                     WHEN auth_login_attempts.first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '15 minutes' THEN 1
+                     ELSE auth_login_attempts.attempt_count + 1 END) >= 8
+                   THEN CURRENT_TIMESTAMP + INTERVAL '15 minutes'
+                   ELSE NULL END""",
+            (key,),
+        )
+        # Periodically discard old pseudonymous throttling records.
+        conn.execute("DELETE FROM auth_login_attempts WHERE first_attempt_at < CURRENT_TIMESTAMP - INTERVAL '1 day'")
+
+
+def clear_login_failures(identifier):
+    key = _auth_identifier_hash(identifier)
+    with db_connection() as conn:
+        conn.execute("DELETE FROM auth_login_attempts WHERE identifier_hash = %s", (key,))
+
+
 def password_validation_error(password):
     if len(password) < 12:
         return "Password must be at least 12 characters long."
@@ -232,15 +282,20 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        if login_is_throttled(username):
+            flash("Unable to sign in right now. Please wait 15 minutes and try again.", "error")
+            return render_template("login.html"), 429
         with db_connection() as conn:
             admin = conn.execute("SELECT * FROM admins WHERE username = %s", (username,)).fetchone()
         if admin and check_password_hash(admin["password_hash"], password):
+            clear_login_failures(username)
             session.clear()
             session.permanent = True
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             destination = safe_next_url(request.args.get("next"))
             return redirect(destination or url_for("dashboard"))
+        record_login_failure(username)
         flash("Invalid username or password. If you don’t have an account, please contact the IT Department to request administrator access.", "error")
     return render_template("login.html")
 
@@ -282,14 +337,16 @@ def dashboard():
 def validate_student_form(form):
     data = {}
     errors = []
-    for field, label in [("student_number", "Student number"), ("first_name", "First name"), ("last_name", "Last name")]:
+    for field, label, maximum in [("student_number", "Student number", 40), ("first_name", "First name", 100), ("last_name", "Last name", 100)]:
         value = form.get(field, "").strip()
         if not value:
             errors.append(f"{label} is required.")
+        elif len(value) > maximum:
+            errors.append(f"{label} must be {maximum} characters or fewer.")
         data[field] = value
-    data["email"] = form.get("email", "").strip() or None
-    if data["email"] and ("@" not in data["email"] or "." not in data["email"].split("@")[-1]):
-        errors.append("Enter a valid email address or leave it blank.")
+    data["email"] = form.get("email", "").strip().lower() or None
+    if data["email"] and (len(data["email"]) > 255 or "@" not in data["email"] or "." not in data["email"].split("@")[-1]):
+        errors.append("Enter a valid email address (maximum 255 characters) or leave it blank.")
     try:
         data["attendance"] = float(form.get("attendance", ""))
         if not 0 <= data["attendance"] <= 100:
@@ -478,6 +535,9 @@ def student_login():
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
+        if login_is_throttled(email):
+            flash("Unable to sign in right now. Please wait 15 minutes and try again.", "error")
+            return render_template("student_login.html"), 429
         with db_connection() as conn:
             account = conn.execute(
                 "SELECT sa.id, sa.password_hash, sa.is_active, s.id AS student_id, s.first_name, s.last_name "
@@ -485,6 +545,7 @@ def student_login():
                 (email,)
             ).fetchone()
         if account and check_password_hash(account["password_hash"], password) and account["is_active"]:
+            clear_login_failures(email)
             session.clear()
             session.permanent = True
             session["student_account_id"] = account["id"]
@@ -492,6 +553,7 @@ def student_login():
             session["student_name"] = account["first_name"] + " " + account["last_name"]
             destination = safe_next_url(request.args.get("next"))
             return redirect(destination or url_for("student_portal"))
+        record_login_failure(email)
         flash("Unable to sign in. Check your credentials or contact the school administrator if your account is awaiting approval.", "error")
     return render_template("student_login.html")
 
@@ -549,6 +611,8 @@ def create_admin_account():
         confirm_password = request.form.get("confirm_password", "")
         if not username:
             flash("Username is required.", "error")
+        elif len(username) > 80:
+            flash("Username must be 80 characters or fewer.", "error")
         elif password_validation_error(password):
             flash(password_validation_error(password), "error")
         elif password != confirm_password:
