@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, session, url_for, Response, abort, g
 from werkzeug.security import check_password_hash, generate_password_hash
 from psycopg.types.json import Jsonb
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from reportlab.lib import colors
@@ -138,6 +138,85 @@ def fetch_students(search=""):
         else:
             rows = conn.execute("SELECT * FROM students ORDER BY last_name, first_name").fetchall()
     return [enrich_student(r) for r in rows]
+
+
+
+def percentage_to_grade_point(percentage):
+    """Illustrative PH-style percentage conversion; institution policy may differ."""
+    if percentage >= 97: return 1.00
+    if percentage >= 94: return 1.25
+    if percentage >= 91: return 1.50
+    if percentage >= 88: return 1.75
+    if percentage >= 85: return 2.00
+    if percentage >= 82: return 2.25
+    if percentage >= 79: return 2.50
+    if percentage >= 76: return 2.75
+    if percentage >= 75: return 3.00
+    return 5.00
+
+
+def get_student_gwa_summary(student_id):
+    """Calculate an interim or completed GWA from subject term records."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            """SELECT ss.id AS enrollment_id, ss.academic_year, ss.semester,
+                      sub.id AS subject_id, sub.subject_code, sub.subject_name, sub.units,
+                      gr.term, gr.percentage, gr.updated_at
+               FROM student_subjects ss
+               JOIN subjects sub ON sub.id = ss.subject_id
+               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
+               WHERE ss.student_id = %s
+               ORDER BY ss.academic_year DESC, ss.semester, sub.subject_name, gr.term""",
+            (student_id,)
+        ).fetchall()
+        policy = conn.execute(
+            "SELECT dean_list_gwa_max, max_subject_gwa FROM grading_policies WHERE id = 1"
+        ).fetchone()
+    by_enrollment = {}
+    for row in rows:
+        key = row["enrollment_id"]
+        if key not in by_enrollment:
+            by_enrollment[key] = {
+                "enrollment_id": key, "academic_year": row["academic_year"], "semester": row["semester"],
+                "subject_id": row["subject_id"], "subject_code": row["subject_code"],
+                "subject_name": row["subject_name"], "units": float(row["units"]),
+                "midterms": None, "finals": None, "last_updated": row["updated_at"]
+            }
+        if row["term"] == "Midterms":
+            by_enrollment[key]["midterms"] = float(row["percentage"])
+        elif row["term"] == "Finals":
+            by_enrollment[key]["finals"] = float(row["percentage"])
+        if row["updated_at"] and (not by_enrollment[key]["last_updated"] or row["updated_at"] > by_enrollment[key]["last_updated"]):
+            by_enrollment[key]["last_updated"] = row["updated_at"]
+    subjects = []
+    for item in by_enrollment.values():
+        available = [x for x in (item["midterms"], item["finals"]) if x is not None]
+        item["subject_percentage"] = round(sum(available) / len(available), 2) if available else None
+        item["grade_point"] = percentage_to_grade_point(item["subject_percentage"]) if available else None
+        item["term_status"] = "Complete" if item["midterms"] is not None and item["finals"] is not None else ("In progress" if available else "No grades")
+        subjects.append(item)
+    graded = [item for item in subjects if item["grade_point"] is not None]
+    units_total = sum(item["units"] for item in graded)
+    gwa = round(sum(item["grade_point"] * item["units"] for item in graded) / units_total, 2) if units_total else None
+    all_complete = bool(subjects) and len(graded) == len(subjects) and all(item["term_status"] == "Complete" for item in subjects)
+    max_subject_gwa = float(policy["max_subject_gwa"]) if policy else 2.50
+    dean_gwa_max = float(policy["dean_list_gwa_max"]) if policy else 1.75
+    no_low_subject = bool(graded) and all(item["grade_point"] <= max_subject_gwa for item in graded)
+    dean_status = "Dean's List" if all_complete and gwa is not None and gwa <= dean_gwa_max and no_low_subject else (
+        "Pending final grades" if not all_complete and subjects else "Not qualified"
+    )
+    return {"subjects": subjects, "gwa": gwa, "graded_subjects": len(graded),
+            "total_subjects": len(subjects), "units_total": units_total,
+            "all_complete": all_complete, "dean_status": dean_status,
+            "dean_gwa_max": dean_gwa_max, "max_subject_gwa": max_subject_gwa}
+
+
+def validate_grade(value):
+    try:
+        grade = float(value)
+    except (TypeError, ValueError):
+        return None
+    return grade if math.isfinite(grade) and 0 <= grade <= 100 else None
 
 
 def is_safe_redirect_target(target):
@@ -731,6 +810,281 @@ def validate_student_form(form):
             data[key] = 0
             errors.append(f"{subject} grade must be a number.")
     return data, errors
+
+
+
+@app.route("/subjects", methods=["GET", "POST"])
+@login_required
+def subjects_page():
+    if request.method == "POST":
+        code = request.form.get("subject_code", "").strip().upper()
+        name = request.form.get("subject_name", "").strip()
+        description = request.form.get("description", "").strip() or None
+        try: units = float(request.form.get("units", "3"))
+        except ValueError: units = 0
+        if not code or len(code) > 30 or not name or len(name) > 150 or not math.isfinite(units) or not 0 < units <= 30:
+            flash("Enter a valid subject code, name, and units (greater than 0 and at most 30).", "error")
+        else:
+            try:
+                with db_connection() as conn:
+                    new_subject = conn.execute(
+                        """INSERT INTO subjects (subject_code, subject_name, units, description)
+                           VALUES (%s, %s, %s, %s) RETURNING id""",
+                        (code, name, units, description)).fetchone()
+                    log_audit_event(conn, "create", "subject", new_subject["id"], {"subject_code": code})
+                flash("Subject added. You can now enroll students and enter grades.", "success")
+                return redirect(url_for("subject_detail", subject_id=new_subject["id"]))
+            except psycopg.errors.UniqueViolation:
+                flash("Subject code and subject name must both be unique.", "error")
+    with db_connection() as conn:
+        subjects = conn.execute(
+            """SELECT sub.*, COUNT(DISTINCT ss.student_id) AS student_count
+               FROM subjects sub LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
+               WHERE sub.is_active = TRUE GROUP BY sub.id ORDER BY sub.subject_name"""
+        ).fetchall()
+    return render_template("subjects.html", subjects=subjects)
+
+
+@app.get("/subjects/<int:subject_id>")
+@login_required
+def subject_detail(subject_id):
+    with db_connection() as conn:
+        subject = conn.execute("SELECT * FROM subjects WHERE id = %s AND is_active = TRUE", (subject_id,)).fetchone()
+        students = conn.execute(
+            """SELECT ss.id AS enrollment_id, ss.academic_year, ss.semester,
+                      st.id AS student_id, st.student_number, st.first_name, st.last_name,
+                      MAX(CASE WHEN gr.term = 'Midterms' THEN gr.percentage END) AS midterms,
+                      MAX(CASE WHEN gr.term = 'Finals' THEN gr.percentage END) AS finals
+               FROM student_subjects ss JOIN students st ON st.id = ss.student_id
+               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
+               WHERE ss.subject_id = %s
+               GROUP BY ss.id, st.id ORDER BY st.last_name, st.first_name""", (subject_id,)).fetchall()
+        available_students = conn.execute(
+            "SELECT id, student_number, first_name, last_name FROM students ORDER BY last_name, first_name"
+        ).fetchall()
+    if not subject: abort(404)
+    return render_template("subject_detail.html", subject=subject, students=students, available_students=available_students)
+
+
+@app.post("/subjects/<int:subject_id>/enroll")
+@login_required
+def enroll_student(subject_id):
+    student_id = request.form.get("student_id", type=int)
+    academic_year = request.form.get("academic_year", "2026-2027").strip()
+    semester = request.form.get("semester", "1st Semester").strip()
+    if not student_id or not academic_year or len(academic_year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer"):
+        flash("Choose a student, academic year, and valid semester.", "error")
+        return redirect(url_for("subject_detail", subject_id=subject_id))
+    try:
+        with db_connection() as conn:
+            enrollment = conn.execute(
+                """INSERT INTO student_subjects (student_id, subject_id, academic_year, semester)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (student_id, subject_id, academic_year, semester)).fetchone()
+            log_audit_event(conn, "enroll", "student_subject", enrollment["id"],
+                            {"student_id": student_id, "subject_id": subject_id, "academic_year": academic_year, "semester": semester})
+        flash("Student enrolled in this subject.", "success")
+    except psycopg.errors.UniqueViolation:
+        flash("This student is already enrolled in that subject for the selected year and semester.", "error")
+    except psycopg.errors.ForeignKeyViolation:
+        flash("Student or subject was not found.", "error")
+    return redirect(url_for("subject_detail", subject_id=subject_id))
+
+
+@app.route("/enrollments/<int:enrollment_id>/grades", methods=["GET", "POST"])
+@login_required
+def enrollment_grades(enrollment_id):
+    with db_connection() as conn:
+        enrollment = conn.execute(
+            """SELECT ss.*, st.student_number, st.first_name, st.last_name,
+                      sub.subject_code, sub.subject_name, sub.units
+               FROM student_subjects ss JOIN students st ON st.id = ss.student_id
+               JOIN subjects sub ON sub.id = ss.subject_id WHERE ss.id = %s""", (enrollment_id,)).fetchone()
+    if not enrollment: abort(404)
+    if request.method == "POST":
+        term = request.form.get("term", "")
+        grade = validate_grade(request.form.get("percentage", ""))
+        if term not in ("Midterms", "Finals") or grade is None:
+            flash("Choose Midterms or Finals and enter a grade from 0 to 100.", "error")
+        else:
+            with db_connection() as conn:
+                old = conn.execute("SELECT percentage FROM grade_records WHERE student_subject_id = %s AND term = %s",
+                                   (enrollment_id, term)).fetchone()
+                previous = float(old["percentage"]) if old else None
+                conn.execute(
+                    """INSERT INTO grade_records (student_subject_id, term, percentage, recorded_by_admin_id)
+                       VALUES (%s, %s, %s, %s)
+                       ON CONFLICT (student_subject_id, term) DO UPDATE
+                       SET percentage = EXCLUDED.percentage, recorded_by_admin_id = EXCLUDED.recorded_by_admin_id,
+                           updated_at = CURRENT_TIMESTAMP""",
+                    (enrollment_id, term, grade, session["admin_id"]))
+                conn.execute(
+                    """INSERT INTO grade_record_history
+                       (student_subject_id, term, action, previous_percentage, new_percentage, actor_admin_id)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (enrollment_id, term, "created" if previous is None else "updated", previous, grade, session["admin_id"]))
+                log_audit_event(conn, "created" if previous is None else "updated", "grade_record", enrollment_id,
+                                {"term": term, "previous_percentage": previous, "new_percentage": grade})
+            flash(f"{term} grade saved. The GWA has been recalculated.", "success")
+            return redirect(url_for("enrollment_grades", enrollment_id=enrollment_id))
+    with db_connection() as conn:
+        records = conn.execute(
+            """SELECT id, term, percentage, created_at, updated_at FROM grade_records
+               WHERE student_subject_id = %s ORDER BY CASE term WHEN 'Midterms' THEN 1 ELSE 2 END""", (enrollment_id,)).fetchall()
+        history = conn.execute(
+            """SELECT h.*, a.username AS admin_username FROM grade_record_history h
+               LEFT JOIN admins a ON a.id = h.actor_admin_id
+               WHERE h.student_subject_id = %s ORDER BY h.changed_at DESC LIMIT 100""", (enrollment_id,)).fetchall()
+    summary = get_student_gwa_summary(enrollment["student_id"])
+    subject_summary = next((s for s in summary["subjects"] if s["enrollment_id"] == enrollment_id), None)
+    return render_template("enrollment_grades.html", enrollment=enrollment, records=records,
+                           history=history, summary=summary, subject_summary=subject_summary)
+
+
+@app.post("/grade-records/<int:record_id>/delete")
+@login_required
+def delete_grade_record(record_id):
+    with db_connection() as conn:
+        record = conn.execute(
+            """SELECT gr.id, gr.student_subject_id, gr.term, gr.percentage
+               FROM grade_records gr WHERE gr.id = %s""", (record_id,)).fetchone()
+        if not record:
+            flash("Grade record was not found.", "error")
+            return redirect(url_for("subjects_page"))
+        conn.execute(
+            """INSERT INTO grade_record_history
+               (student_subject_id, term, action, previous_percentage, new_percentage, actor_admin_id)
+               VALUES (%s, %s, 'deleted', %s, NULL, %s)""",
+            (record["student_subject_id"], record["term"], record["percentage"], session["admin_id"]))
+        conn.execute("DELETE FROM grade_records WHERE id = %s", (record_id,))
+        log_audit_event(conn, "delete", "grade_record", record_id,
+                        {"term": record["term"], "previous_percentage": float(record["percentage"])})
+        enrollment_id = record["student_subject_id"]
+    flash("Grade deleted. The change remains in the history log and GWA was recalculated.", "success")
+    return redirect(url_for("enrollment_grades", enrollment_id=enrollment_id))
+
+
+@app.route("/admin/grade-import", methods=["GET", "POST"])
+@login_required
+def import_grade_report():
+    if request.method == "POST":
+        upload = request.files.get("report_file")
+        if not upload or not upload.filename:
+            flash("Choose a CSV or Excel (.xlsx) file to import.", "error")
+            return render_template("grade_import.html")
+        filename = upload.filename.lower()
+        try:
+            if filename.endswith(".csv"):
+                rows = list(csv.DictReader(io.StringIO(upload.stream.read().decode("utf-8-sig"))))
+            elif filename.endswith(".xlsx"):
+                workbook = load_workbook(upload, read_only=True, data_only=True)
+                values = list(workbook.active.iter_rows(values_only=True))
+                if not values: raise ValueError("The workbook is empty.")
+                headers = [str(value or "").strip() for value in values[0]]
+                rows = [dict(zip(headers, row)) for row in values[1:] if any(value is not None for value in row)]
+            else:
+                raise ValueError("Unsupported file type. Use CSV or .xlsx.")
+            required = {"Student Number", "Subject Code", "Academic Year", "Semester", "Term", "Percentage"}
+            if not rows or not required.issubset(set(rows[0].keys())):
+                raise ValueError("Missing required headers. Download the sample template to see the exact column names.")
+            imported, skipped = 0, []
+            with db_connection() as conn:
+                for row_number, row in enumerate(rows, start=2):
+                    student_number = str(row.get("Student Number") or "").strip()
+                    code = str(row.get("Subject Code") or "").strip().upper()
+                    year = str(row.get("Academic Year") or "").strip()
+                    semester = str(row.get("Semester") or "").strip()
+                    term = str(row.get("Term") or "").strip().title()
+                    grade = validate_grade(row.get("Percentage"))
+                    if not student_number or not code or not year or len(year) > 20 or semester not in ("1st Semester", "2nd Semester", "Summer") or term not in ("Midterms", "Finals") or grade is None:
+                        skipped.append(f"Row {row_number}: invalid or missing values."); continue
+                    student = conn.execute("SELECT id FROM students WHERE student_number = %s", (student_number,)).fetchone()
+                    subject = conn.execute("SELECT id FROM subjects WHERE subject_code = %s AND is_active = TRUE", (code,)).fetchone()
+                    if not student or not subject:
+                        skipped.append(f"Row {row_number}: student number or subject code not found."); continue
+                    enrollment = conn.execute(
+                        """INSERT INTO student_subjects (student_id, subject_id, academic_year, semester)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (student_id, subject_id, academic_year, semester)
+                           DO UPDATE SET student_id = EXCLUDED.student_id RETURNING id""",
+                        (student["id"], subject["id"], year, semester)).fetchone()
+                    old = conn.execute("SELECT percentage FROM grade_records WHERE student_subject_id = %s AND term = %s",
+                                       (enrollment["id"], term)).fetchone()
+                    previous = float(old["percentage"]) if old else None
+                    conn.execute(
+                        """INSERT INTO grade_records (student_subject_id, term, percentage, recorded_by_admin_id)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (student_subject_id, term) DO UPDATE
+                           SET percentage = EXCLUDED.percentage, recorded_by_admin_id = EXCLUDED.recorded_by_admin_id,
+                               updated_at = CURRENT_TIMESTAMP""",
+                        (enrollment["id"], term, grade, session["admin_id"]))
+                    conn.execute(
+                        """INSERT INTO grade_record_history
+                           (student_subject_id, term, action, previous_percentage, new_percentage, actor_admin_id)
+                           VALUES (%s, %s, %s, %s, %s, %s)""",
+                        (enrollment["id"], term, "created" if previous is None else "updated", previous, grade, session["admin_id"]))
+                    imported += 1
+                log_audit_event(conn, "import", "grade_report", details={"imported_rows": imported, "skipped_rows": len(skipped)})
+            flash(f"Imported {imported} grade row(s). {len(skipped)} row(s) skipped.", "success" if not skipped else "error")
+            for message in skipped[:10]: flash(message, "error")
+        except (UnicodeDecodeError, ValueError, OSError) as exc:
+            flash(str(exc), "error")
+        except Exception:
+            app.logger.exception("Grade report import failed")
+            flash("The file could not be imported. Check the format and required headers.", "error")
+    return render_template("grade_import.html")
+
+
+@app.get("/admin/grade-import-template.csv")
+@login_required
+def export_grade_import_template():
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Student Number", "Subject Code", "Academic Year", "Semester", "Term", "Percentage"])
+    writer.writerow(["STU-001", "PROG", "2026-2027", "1st Semester", "Midterms", "88.5"])
+    return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=passasado_grade_import_template.csv"})
+
+
+@app.get("/export/grade-report.xlsx")
+@login_required
+def export_grade_report():
+    workbook = Workbook()
+    records_sheet = workbook.active
+    records_sheet.title = "Grade Records"
+    records_sheet.append(["Student Number", "Student Name", "Subject Code", "Subject", "Units",
+                          "Academic Year", "Semester", "Term", "Percentage", "Grade Point", "Last Updated", "Unique Student Tracker ID"])
+    gwa_sheet = workbook.create_sheet("GWA Summary")
+    gwa_sheet.append(["Student Number", "Student Name", "GWA", "Dean's List Status", "Subjects Graded", "Subjects Enrolled"])
+    with db_connection() as conn:
+        records = conn.execute(
+            """SELECT st.id AS student_id, st.student_number, st.first_name, st.last_name, st.tracker_id,
+                      sub.subject_code, sub.subject_name, sub.units, ss.academic_year, ss.semester,
+                      gr.term, gr.percentage, gr.updated_at
+               FROM grade_records gr JOIN student_subjects ss ON ss.id = gr.student_subject_id
+               JOIN students st ON st.id = ss.student_id JOIN subjects sub ON sub.id = ss.subject_id
+               ORDER BY st.student_number, ss.academic_year, ss.semester, sub.subject_name, gr.term""").fetchall()
+        students = conn.execute("SELECT id, student_number, first_name, last_name FROM students ORDER BY student_number").fetchall()
+        log_audit_event(conn, "export", "grade_report", details={"format": "xlsx"})
+    for row in records:
+        records_sheet.append([row["student_number"], f'{row["first_name"]} {row["last_name"]}', row["subject_code"],
+                              row["subject_name"], float(row["units"]), row["academic_year"], row["semester"],
+                              row["term"], float(row["percentage"]), percentage_to_grade_point(float(row["percentage"])),
+                              row["updated_at"].replace(tzinfo=None) if row["updated_at"] else None, str(row["tracker_id"])])
+    for student in students:
+        summary = get_student_gwa_summary(student["id"])
+        gwa_sheet.append([student["student_number"], f'{student["first_name"]} {student["last_name"]}',
+                          summary["gwa"], summary["dean_status"], summary["graded_subjects"], summary["total_subjects"]])
+    style_excel_table(records_sheet, "GradeRecordsTable")
+    style_excel_table(gwa_sheet, "GWASummaryTable")
+    for ws in (records_sheet, gwa_sheet):
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                if cell.is_date: cell.number_format = "yyyy-mm-dd hh:mm:ss"
+    output = io.BytesIO()
+    workbook.save(output); output.seek(0)
+    return Response(output.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=passasado_grade_report.xlsx"})
 
 
 @app.route("/students")
