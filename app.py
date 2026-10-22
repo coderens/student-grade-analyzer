@@ -745,27 +745,35 @@ def logout():
 @login_required
 def dashboard():
     students = fetch_students()
+    graded_students = [s for s in students if s["average"] is not None]
     total = len(students)
-    passed = sum(s["status"] == "PASSED" for s in students)
-    failed = total - passed
-    excellent = sum(s["average"] >= 90 for s in students)
-    class_average = round(sum(s["average"] for s in students) / total, 2) if total else 0
-    highest = max(students, key=lambda s: s["average"], default=None)
-    lowest = min(students, key=lambda s: s["average"], default=None)
+    passed = sum(s["status"] == "PASSED" for s in graded_students)
+    failed = sum(s["status"] == "FAILED" for s in graded_students)
+    class_average = round(sum(s["average"] for s in graded_students) / len(graded_students), 2) if graded_students else 0
+    highest = max(graded_students, key=lambda s: s["average"], default=None)
+    lowest = min(graded_students, key=lambda s: s["average"], default=None)
     stats = {
-        "total": total, "passed": passed, "failed": failed,
-        "pass_rate": round(passed / total * 100, 1) if total else 0,
-        "fail_rate": round(failed / total * 100, 1) if total else 0,
-        "excellent": excellent, "class_average": class_average,
-        "highest": highest, "lowest": lowest,
-        "overall_performance": get_performance(class_average) if total else "No data"
+        "total": total, "graded_total": len(graded_students), "passed": passed, "failed": failed,
+        "pass_rate": round(passed / len(graded_students) * 100, 1) if graded_students else 0,
+        "fail_rate": round(failed / len(graded_students) * 100, 1) if graded_students else 0,
+        "excellent": sum(s["average"] >= 90 for s in graded_students),
+        "class_average": class_average, "highest": highest, "lowest": lowest,
+        "overall_performance": get_performance(class_average) if graded_students else "Awaiting grades"
     }
-    subject_averages = []
-    for subject in SUBJECTS:
-        key = subject.lower().replace(" ", "_")
-        subject_averages.append(round(sum(float(s[key]) for s in students) / total, 2) if total else 0)
-    return render_template("dashboard.html", stats=stats, students=students[:8], subjects=SUBJECTS,
-                           subject_averages=subject_averages)
+    with db_connection() as conn:
+        subject_rows = conn.execute(
+            """SELECT sub.subject_name,
+                      AVG(CASE WHEN gr.term IS NOT NULL THEN gr.percentage END) AS average_grade
+               FROM subjects sub
+               LEFT JOIN student_subjects ss ON ss.subject_id = sub.id
+               LEFT JOIN grade_records gr ON gr.student_subject_id = ss.id
+               WHERE sub.is_active = TRUE
+               GROUP BY sub.id ORDER BY sub.subject_name"""
+        ).fetchall()
+    subjects = [row["subject_name"] for row in subject_rows]
+    subject_averages = [round(float(row["average_grade"]), 2) if row["average_grade"] is not None else 0 for row in subject_rows]
+    return render_template("dashboard.html", stats=stats, students=students[:8],
+                           subjects=subjects, subject_averages=subject_averages)
 
 
 @app.get("/my-activity")
