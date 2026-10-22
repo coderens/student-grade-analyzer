@@ -26,5 +26,6 @@
     {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="flash-stack">{% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
     {% block content %}{% endblock %}
   </section>
+  <footer class="privacy-footer"><a href="{{ url_for('privacy_notice') }}">Privacy notice</a></footer>
 </main>
 </body></html>
