@@ -33,7 +33,7 @@ Install PostgreSQL client tools locally. In PowerShell, set the URL for this ter
 
 ```powershell
 $env:SOURCE_DATABASE_URL = "PASTE_RENDER_EXTERNAL_DATABASE_URL_HERE"
-pg_dump --no-owner --no-acl --format=plain "$env:SOURCE_DATABASE_URL" | gzip > gradepilot.sql.gz
+pg_dump --no-owner --no-acl --format=plain --file=gradepilot.sql "$env:SOURCE_DATABASE_URL"
 ```
 
 If the local `pg_dump` version does not match the server version, install a compatible PostgreSQL client version. Keep the dump private; it contains student records and administrator account hashes.
@@ -49,7 +49,7 @@ gcloud storage cp .\gradepilot.sql.gz gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sq
 gcloud sql import sql INSTANCE_NAME gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sql.gz --database=gradepilot
 ```
 
-If the import reports a permissions issue, grant the Cloud SQL instance's service agent the required access to the bucket, then retry. Verify the imported tables and row counts before switching traffic. Delete the temporary dump and bucket object when the migration is verified and no longer needed.
+If the import reports a permissions issue, grant the Cloud SQL instance's service agent the required access to the bucket, then retry. Verify the imported tables and row counts before switching traffic. Delete the local `gradepilot.sql` dump and the temporary bucket object when the migration is verified and no longer needed.
 
 ## 4. Deploy the app
 
