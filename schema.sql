@@ -35,3 +35,11 @@ CREATE INDEX IF NOT EXISTS student_accounts_email_idx ON student_accounts (LOWER
 
 ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS privacy_notice_version VARCHAR(20);
 ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS privacy_notice_acknowledged_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS auth_login_attempts (
+    identifier_hash CHAR(64) PRIMARY KEY,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    first_attempt_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    locked_until TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS auth_login_attempts_first_attempt_idx ON auth_login_attempts (first_attempt_at);
