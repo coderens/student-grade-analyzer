@@ -32,3 +32,6 @@ CREATE TABLE IF NOT EXISTS student_accounts (
 );
 ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS student_accounts_email_idx ON student_accounts (LOWER(email));
+
+ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS privacy_notice_version VARCHAR(20);
+ALTER TABLE student_accounts ADD COLUMN IF NOT EXISTS privacy_notice_acknowledged_at TIMESTAMPTZ;
