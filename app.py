@@ -605,6 +605,7 @@ def student_login():
                     flash("Your account is awaiting administrator approval.", "error")
                     return render_template("student_login.html")
                 session.clear()
+                session["csrf_token"] = secrets.token_hex(32)
                 session["student_account_id"] = account["id"]
                 session["student_record_id"] = account["student_id"]
                 session["student_number"] = account["student_number"]
@@ -727,6 +728,7 @@ def login():
             admin = conn.execute("SELECT * FROM admins WHERE username = %s", (username,)).fetchone()
         if admin and check_password_hash(admin["password_hash"], password):
             session.clear()
+            session["csrf_token"] = secrets.token_hex(32)
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             session["session_version"] = admin["session_version"]
