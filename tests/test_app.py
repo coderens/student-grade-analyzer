@@ -61,8 +61,15 @@ class GradePilotValidationTests(unittest.TestCase):
         self.assertTrue(any("Student number" in error for error in errors))
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_tracker_id_migration_is_unique_and_non_null(self):
+        with open("schema.sql", encoding="utf-8") as schema_file:
+            schema = schema_file.read()
+        self.assertIn("tracker_id UUID", schema)
+        self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS admins_tracker_id_idx", schema)
+
+    def test_personal_activity_route_requires_login(self):
+        response = app.test_client().get("/my-activity")
+        self.assertEqual(response.status_code, 302)
 
 
     def test_tracker_id_migration_is_unique_and_non_null(self):
@@ -74,3 +81,7 @@ if __name__ == "__main__":
     def test_personal_activity_route_requires_login(self):
         response = app.test_client().get("/my-activity")
         self.assertEqual(response.status_code, 302)
+
+
+if __name__ == "__main__":
+    unittest.main()
