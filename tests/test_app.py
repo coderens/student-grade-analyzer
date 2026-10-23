@@ -101,7 +101,18 @@ class GradePilotValidationTests(unittest.TestCase):
         response = app.test_client().get("/forgot-password")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'name="contact"', response.data)
-        self.assertIn(b"Your Gmail address", response.data)\n        self.assertIn(b"STEP 1 OF 3", response.data)\n\n    def test_password_recovery_pages_enforce_three_step_user_flow(self):\n        with open("templates/verify_reset_code.html", encoding="utf-8") as template_file:\n            verify_template = template_file.read()\n        with open("templates/reset_password.html", encoding="utf-8") as template_file:\n            reset_template = template_file.read()\n        self.assertIn("STEP 2 OF 3", verify_template)\n        self.assertIn("autocomplete=\\"one-time-code\\"", verify_template)\n        self.assertIn("STEP 3 OF 3", reset_template)\n        self.assertIn("Your email is verified", reset_template)
+        self.assertIn(b"Your Gmail address", response.data)
+        self.assertIn(b"STEP 1 OF 3", response.data)
+
+    def test_password_recovery_pages_enforce_three_step_user_flow(self):
+        with open("templates/verify_reset_code.html", encoding="utf-8") as template_file:
+            verify_template = template_file.read()
+        with open("templates/reset_password.html", encoding="utf-8") as template_file:
+            reset_template = template_file.read()
+        self.assertIn("STEP 2 OF 3", verify_template)
+        self.assertIn('autocomplete="one-time-code"', verify_template)
+        self.assertIn("STEP 3 OF 3", reset_template)
+        self.assertIn("Your email is verified", reset_template)
 
     def test_student_auth_routes_are_separate_and_protected(self):
         client = app.test_client()
