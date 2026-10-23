@@ -504,6 +504,8 @@ def forgot_password():
 
         # A contact shared by multiple administrator accounts is ambiguous, so
         # do not issue a reset code to an account that cannot be identified safely.
+        if len(matches) != 1 or not matches[0]["destination"]:
+            app.logger.warning("Password recovery request did not match exactly one administrator recovery contact.")
         if len(matches) == 1 and matches[0]["destination"]:
             admin = matches[0]
             destination = admin["destination"]
