@@ -387,7 +387,16 @@ def send_recovery_code(method, destination, code):
         username = os.getenv("SMTP_USERNAME")
         password = os.getenv("SMTP_PASSWORD")
         sender = os.getenv("SMTP_FROM") or username
-        if not all([host, username, password, sender]):
+        missing = [
+            name for name, value in {
+                "SMTP_HOST": host,
+                "SMTP_USERNAME": username,
+                "SMTP_PASSWORD": password,
+                "SMTP_FROM (or SMTP_USERNAME)": sender,
+            }.items() if not value
+        ]
+        if missing:
+            app.logger.error("Password recovery email is not configured; missing: %s", ", ".join(missing))
             return False
         message = EmailMessage()
         message["Subject"] = "passASADO or FAILet password recovery code"
@@ -397,11 +406,16 @@ def send_recovery_code(method, destination, code):
             f"Your passASADO or FAILet password recovery code is {code}. "
             "It expires in 10 minutes. If you did not request this, ignore this email."
         )
-        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
-            server.starttls()
-            server.login(username, password)
-            server.send_message(message)
-        return True
+        try:
+            with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=15) as server:
+                server.starttls()
+                server.login(username, password)
+                server.send_message(message)
+            app.logger.info("Password recovery email accepted by SMTP provider.")
+            return True
+        except Exception:
+            app.logger.exception("Password recovery email delivery failed during SMTP connection, authentication, or send.")
+            return False
 
     import base64
     from urllib.parse import urlencode
