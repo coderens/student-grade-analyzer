@@ -1,14 +1,18 @@
-{% extends 'base.html' %}{% block title %}Verify code{% endblock %}
+{% extends 'base.html' %}{% block title %}Enter verification code{% endblock %}
 {% block content %}
 <div class="login-panel">
-  <form class="login-card" method="post">
+  <form class="login-card recovery-card" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="eyebrow">ACCOUNT RECOVERY</div>
-    <h2>Verify your code</h2>
-    <p class="muted">Enter the verification code sent to your registered recovery contact. The code expires after 10 minutes.</p>
-    <label>Verification code<input name="code" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="one-time-code"></label>
+    <div class="eyebrow">ACCOUNT RECOVERY · STEP 2 OF 3</div>
+    <div class="recovery-symbol" aria-hidden="true">✉</div>
+    <h2>Check your Gmail</h2>
+    <p class="muted recovery-intro">We've sent a 6-digit verification code to the Gmail address registered to your account. Enter the code below to verify your identity.</p>
+    <label for="code">6-digit code
+      <input id="code" class="verification-code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="one-time-code" placeholder="000000" aria-describedby="code-help">
+    </label>
+    <p id="code-help" class="muted recovery-note">The code expires in 10 minutes. Check your Spam folder if you don't see it. You have up to 5 attempts.</p>
     <button class="btn primary full" type="submit">Verify code</button>
-    <a class="btn full" href="{{ url_for('forgot_password') }}">Start again</a>
+    <a class="btn full" href="{{ url_for('forgot_password') }}">Didn't get a code? Try again</a>
   </form>
 </div>
 {% endblock %}
