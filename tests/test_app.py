@@ -97,6 +97,12 @@ class GradePilotValidationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
 
 
+    def test_forgot_password_page_requests_registered_contact(self):
+        response = app.test_client().get("/forgot-password")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'name="contact"', response.data)
+        self.assertIn(b"Registered email or phone number", response.data)
+
     def test_student_auth_routes_are_separate_and_protected(self):
         client = app.test_client()
         self.assertEqual(client.get("/student/portal").status_code, 302)

@@ -454,22 +454,46 @@ def set_admin_recovery_contact_command():
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        method = request.form.get("method", "")
-        if method not in ("email", "sms"):
-            flash("Choose a valid recovery method.", "error")
-            return render_template("forgot_password.html")
-        column = "recovery_email" if method == "email" else "recovery_phone"
-        destination = None
+        contact = request.form.get("contact", "").strip()
+        # Clear any previous recovery flow before starting a new request.
+        session.pop("password_reset_id", None)
+        session.pop("password_reset_stage", None)
+
         admin = None
-        with db_connection() as conn:
-            admin = conn.execute(
-                f"SELECT id, {column} AS destination FROM admins WHERE username = %s",
-                (username,)
-            ).fetchone()
-            if admin:
-                destination = admin["destination"]
-            if destination:
+        destination = None
+        sent = False
+        reset_row = None
+
+        # Only send codes to a recovery contact already saved on an administrator
+        # account. Never let an unauthenticated visitor register a new contact here.
+        if contact and "@" in contact:
+            method = "email"
+            with db_connection() as conn:
+                matches = conn.execute(
+                    """SELECT id, recovery_email AS destination
+                       FROM admins
+                       WHERE LOWER(TRIM(recovery_email)) = LOWER(TRIM(%s))""",
+                    (contact,)
+                ).fetchall()
+        elif contact:
+            method = "sms"
+            phone_digits = "".join(character for character in contact if character.isdigit())
+            with db_connection() as conn:
+                matches = conn.execute(
+                    """SELECT id, recovery_phone AS destination
+                       FROM admins
+                       WHERE regexp_replace(COALESCE(recovery_phone, ''), '[^0-9]', '', 'g') = %s""",
+                    (phone_digits,)
+                ).fetchall() if phone_digits else []
+        else:
+            matches = []
+
+        # A contact shared by multiple administrator accounts is ambiguous, so
+        # do not issue a reset code to an account that cannot be identified safely.
+        if len(matches) == 1 and matches[0]["destination"]:
+            admin = matches[0]
+            destination = admin["destination"]
+            with db_connection() as conn:
                 code = f"{secrets.randbelow(1000000):06d}"
                 conn.execute(
                     "UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP "
@@ -488,15 +512,24 @@ def forgot_password():
                     app.logger.exception("Password recovery delivery failed")
                     sent = False
                 if not sent:
-                    conn.execute("UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = %s",
-                                 (reset_row["id"],))
-        if admin and destination and sent:
+                    conn.execute(
+                        "UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = %s",
+                        (reset_row["id"],)
+                    )
+
+        if admin and destination and sent and reset_row:
             session["password_reset_id"] = reset_row["id"]
             session["password_reset_stage"] = "verify"
-            flash("If the account and recovery contact are valid, a verification code has been sent.", "success")
             return redirect(url_for("verify_password_reset"))
-        # Keep the response generic to avoid revealing which usernames have recovery contacts.
-        flash("If the account and recovery contact are valid, recovery instructions will be sent. If no message arrives, contact the system administrator.", "success")
+
+        # Keep the same response for unknown, unregistered, ambiguous, and
+        # undeliverable contacts to avoid account enumeration.
+        flash(
+            "If this contact is registered and recovery delivery is configured, "
+            "a verification code will be sent. If no code arrives, contact the "
+            "system administrator to register or verify your recovery contact.",
+            "success"
+        )
     return render_template("forgot_password.html")
 
 
