@@ -45,8 +45,8 @@ Create a private Cloud Storage bucket in the same region. Replace placeholders w
 ```powershell
 gcloud config set project PROJECT_ID
 gcloud storage buckets create gs://UNIQUE_MIGRATION_BUCKET --location=asia-southeast1
-gcloud storage cp .\gradepilot.sql.gz gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sql.gz
-gcloud sql import sql INSTANCE_NAME gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sql.gz --database=gradepilot
+gcloud storage cp .\gradepilot.sql gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sql
+gcloud sql import sql INSTANCE_NAME gs://UNIQUE_MIGRATION_BUCKET/gradepilot.sql --database=gradepilot
 ```
 
 If the import reports a permissions issue, grant the Cloud SQL instance's service agent the required access to the bucket, then retry. Verify the imported tables and row counts before switching traffic. Delete the local `gradepilot.sql` dump and the temporary bucket object when the migration is verified and no longer needed.
